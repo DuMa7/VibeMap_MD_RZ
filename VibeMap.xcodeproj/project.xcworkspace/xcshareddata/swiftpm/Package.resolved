@@ -1,0 +1,15 @@
+{
+  "originHash" : "5cc5086928b62aada64afb2564a7b8c9e596befcdd70c3c82380e12f754fa52a",
+  "pins" : [
+    {
+      "identity" : "swift-h3",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/JeremyEspresso/swift-h3",
+      "state" : {
+        "branch" : "main",
+        "revision" : "4954df5b0007c012409156308d5cc66bb06f48ec"
+      }
+    }
+  ],
+  "version" : 3
+}
