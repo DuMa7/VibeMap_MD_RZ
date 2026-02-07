@@ -13,7 +13,7 @@ import h3lib // Import the C library
 struct H3Wrapper {
     
     /// Converts a standard coordinate into an H3 Hexagon String
-    static func getH3Index(from coordinate: CLLocationCoordinate2D, resolution: Int32 = 9) -> String? {
+    static func getH3Index(from coordinate: CLLocationCoordinate2D, resolution: Int32 = 10) -> String? {
         // 1. Convert Lat/Lon to Radians (required by H3)
         let latRad = coordinate.latitude * .pi / 180.0
         let lonRad = coordinate.longitude * .pi / 180.0
