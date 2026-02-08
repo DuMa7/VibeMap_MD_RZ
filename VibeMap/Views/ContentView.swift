@@ -211,7 +211,7 @@ struct AchievementRow: View {
             }
             Spacer()
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(.orange)
                 .font(.caption)
         }
         .padding(8)
@@ -232,7 +232,7 @@ struct CityRow: View {
                 Spacer()
                 Text("\(String(format: "%.1f", city.explorationPercentage))%")
                     .font(.subheadline)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.orange)
             }
             
             // Progress bar
@@ -244,7 +244,7 @@ struct CityRow: View {
                         .cornerRadius(3)
                     
                     Rectangle()
-                        .fill(.green)
+                        .fill(.orange)
                         .frame(width: geometry.size.width * (city.explorationPercentage / 100), height: 6)
                         .cornerRadius(3)
                 }

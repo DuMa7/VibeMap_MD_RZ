@@ -31,15 +31,17 @@ struct MapView: View {
                 ForEach(exploredHexes, id: \.h3Index) { hex in
                     if let polygon = hexToPolygon(h3Index: hex.h3Index) {
                         MapPolygon(coordinates: polygon)
-                            .foregroundStyle(.clear)
-                            .stroke(.green, lineWidth: 2)
+                             // NEW: Orange fill with transparency
+                            .foregroundStyle(.orange.opacity(0.4))
+                            // NEW: Thinner orange border
+                            .stroke(.orange, lineWidth: 1)
                     }
                 }
             }
         }
         .mapStyle(mapStyle)
         .mapControlVisibility(.hidden)
-        // NEW: Track the camera changes to get zoom level
+        .animation(.easeInOut(duration: 1.0), value: exploredHexes)
         .onMapCameraChange(frequency: .continuous) { context in
             currentSpan = context.region.span.latitudeDelta
         }
