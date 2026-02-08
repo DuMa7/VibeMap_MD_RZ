@@ -37,8 +37,8 @@
 		A2140DC52F37649D003CC14E /* Exceptions for "VibeMap" folder in "VibeMap" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				H3Wrapper.swift,
-				Info.plist,
+				App/Info.plist,
+				Helpers/H3Wrapper.swift,
 			);
 			target = A2140D972F3754A4003CC14E /* VibeMap */;
 		};
@@ -49,8 +49,8 @@
 			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
 			buildPhase = A2140D962F3754A4003CC14E /* Resources */;
 			membershipExceptions = (
-				BridgingHeader.h,
-				H3Wrapper.swift,
+				App/BridgingHeader.h,
+				Helpers/H3Wrapper.swift,
 			);
 		};
 /* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
