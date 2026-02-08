@@ -3,11 +3,13 @@ import Foundation
 import CoreLocation
 import Observation
 import SwiftData
-import MapKit // Add this
+import MapKit
+import CoreMotion
 
 @Observable
 class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
+    private let activityManager = CMMotionActivityManager()
     
     var userLocation: CLLocationCoordinate2D?
     var authorizationStatus: CLAuthorizationStatus = .notDetermined
@@ -16,12 +18,44 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     private var currentCity: String?
     private var currentCountry: String?
     
+    // PHASE 1: Batch updates & hex geofencing
+    private var lastSavedHex: String?
+    private var pendingHexes: Set<String> = []
+    private var pendingLocationPoints: [(latitude: Double, longitude: Double, h3Index: String)] = []
+    private var lastFlushTime = Date()
+    private let flushInterval: TimeInterval = 15 * 60 // 15 minutes
+    private var flushTimer: Timer?
+    
+    // PHASE 2: Motion detection
+    private var currentProfile: TrackingProfile = .unknown
+    
+    enum TrackingProfile {
+        case walking      // Active movement
+        case stationary   // Not moving
+        case driving      // Fast movement
+        case unknown      // Fallback
+        
+        var description: String {
+            switch self {
+            case .walking: return "Walking 🚶"
+            case .stationary: return "Stationary 🛑"
+            case .driving: return "Driving 🚗"
+            case .unknown: return "Unknown ❓"
+            }
+        }
+    }
+    
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
         manager.allowsBackgroundLocationUpdates = true
         manager.pausesLocationUpdatesAutomatically = false
+        
+        // Start with unknown profile
+        applyProfile(.unknown)
+        
+        // Setup auto-flush timer
+        setupFlushTimer()
     }
     
     func requestPermission() {
@@ -29,17 +63,167 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
     
     func startTracking() {
-        // Use significant location changes (battery efficient)
-        // This triggers when you move ~500 meters
-        manager.startMonitoringSignificantLocationChanges()
-        
-        // Optional: Also use visit monitoring (detects when you stay in one place)
-        manager.startMonitoringVisits()
+        // Start motion detection if available
+        if CMMotionActivityManager.isActivityAvailable() {
+            startMotionDetection()
+        } else {
+            print("⚠️ Motion detection not available - using default profile")
+            applyProfile(.unknown)
+        }
     }
     
     func stopTracking() {
+        manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
         manager.stopMonitoringVisits()
+        activityManager.stopActivityUpdates()
+        
+        // Flush any pending data before stopping
+        flushPendingData()
+    }
+    
+    // MARK: - Motion Detection
+    
+    private func startMotionDetection() {
+        activityManager.startActivityUpdates(to: .main) { [weak self] activity in
+            guard let self = self, let activity = activity else { return }
+            
+            self.handleActivityChange(activity)
+        }
+    }
+    
+    private func handleActivityChange(_ activity: CMMotionActivity) {
+        let newProfile: TrackingProfile
+        
+        if activity.stationary {
+            newProfile = .stationary
+        } else if activity.walking || activity.running {
+            newProfile = .walking
+        } else if activity.automotive {
+            newProfile = .driving
+        } else {
+            newProfile = .unknown
+        }
+        
+        // Only reconfigure if profile actually changed
+        if newProfile != currentProfile {
+            print("🔄 Activity changed: \(currentProfile.description) → \(newProfile.description)")
+            currentProfile = newProfile
+            applyProfile(newProfile)
+        }
+    }
+    
+    private func applyProfile(_ profile: TrackingProfile) {
+        // Stop all tracking first
+        manager.stopUpdatingLocation()
+        manager.stopMonitoringSignificantLocationChanges()
+        
+        switch profile {
+        case .walking:
+            // High precision for walking
+            manager.desiredAccuracy = kCLLocationAccuracyBest
+            manager.distanceFilter = 20 // ~1/8 of a hex at resolution 9
+            manager.startUpdatingLocation()
+            print("📍 Tracking mode: WALKING (20m filter, best accuracy)")
+            
+        case .driving:
+            // Medium precision for driving
+            manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+            manager.distanceFilter = 50 // Faster movement = larger filter OK
+            manager.startUpdatingLocation()
+            print("📍 Tracking mode: DRIVING (50m filter, medium accuracy)")
+            
+        case .stationary:
+            // Ultra low power when stationary
+            manager.stopUpdatingLocation()
+            manager.startMonitoringSignificantLocationChanges()
+            print("📍 Tracking mode: STATIONARY (significant changes only)")
+            
+        case .unknown:
+            // Balanced default
+            manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+            manager.distanceFilter = 30
+            manager.startUpdatingLocation()
+            print("📍 Tracking mode: UNKNOWN (30m filter, medium accuracy)")
+        }
+    }
+    
+    // MARK: - Batch Update System
+    
+    private func setupFlushTimer() {
+        // Invalidate any existing timer
+        flushTimer?.invalidate()
+        
+        // Create timer on main thread
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.flushTimer = Timer.scheduledTimer(withTimeInterval: self.flushInterval, repeats: true) { [weak self] _ in
+                print("⏰ Timer triggered flush")
+                self?.flushPendingData()
+            }
+            
+            // Ensure timer runs in background
+            if let timer = self.flushTimer {
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        }
+    }
+    
+    func flushPendingData() {
+        guard let context = modelContext else { return }
+        guard !pendingHexes.isEmpty || !pendingLocationPoints.isEmpty else { return }
+        
+        let hexCount = pendingHexes.count
+        let pointCount = pendingLocationPoints.count
+        
+        print("💾 Flushing \(hexCount) hexes and \(pointCount) location points to database...")
+        
+        // Save all pending location points
+        for point in pendingLocationPoints {
+            let locationPoint = LocationPoint(
+                latitude: point.latitude,
+                longitude: point.longitude,
+                h3Index: point.h3Index
+            )
+            context.insert(locationPoint)
+        }
+        
+        // Save all pending hexes
+        for hexIndex in pendingHexes {
+            let descriptor = FetchDescriptor<ExploredHex>(
+                predicate: #Predicate { $0.h3Index == hexIndex }
+            )
+            
+            if let existingHex = try? context.fetch(descriptor).first {
+                existingHex.recordVisit()
+            } else {
+                let newHex = ExploredHex(h3Index: hexIndex)
+                context.insert(newHex)
+            }
+        }
+        
+        // Save to database
+        do {
+            try context.save()
+            print("✅ Successfully flushed data to database")
+            
+            // Clear pending data
+            pendingHexes.removeAll()
+            pendingLocationPoints.removeAll()
+            lastFlushTime = Date()
+        } catch {
+            print("❌ Error flushing data: \(error.localizedDescription)")
+        }
+    }
+    
+    func applicationDidBecomeActive() {
+        print("📱 App became active - flushing pending data")
+        flushPendingData()
+    }
+    
+    func applicationDidEnterBackground() {
+        print("📱 App entering background - flushing pending data")
+        flushPendingData()
     }
     
     // MARK: - CLLocationManagerDelegate
@@ -63,23 +247,44 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         
+        // Filter out stale locations (older than 10 seconds)
+        let locationAge = abs(location.timestamp.timeIntervalSinceNow)
+        guard locationAge < 10 else {
+            print("⏭️ Skipping stale location (age: \(Int(locationAge))s)")
+            return
+        }
+        
         userLocation = location.coordinate
         
         let latRads = location.coordinate.latitude * .pi / 180.0
         let lonRads = location.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
         var h3Index: H3Index = 0
-        let error = latLngToCell(&coord, Int32(10), &h3Index)
+        let error = latLngToCell(&coord, Int32(9), &h3Index)
         
         if error == 0 {
             let hexString = String(h3Index, radix: 16)
             
-            print("📍 Location: \(location.coordinate.latitude), \(location.coordinate.longitude)")
-            print("🔷 H3 Index: \(hexString)")
-            
-            saveLocation(latitude: location.coordinate.latitude,
-                        longitude: location.coordinate.longitude,
-                        h3Index: hexString)
+            // HEX GEOFENCING: Only process if we entered a new hex
+            if hexString != lastSavedHex {
+                print("📍 New hex entered: \(hexString) [\(currentProfile.description)]")
+                
+                lastSavedHex = hexString
+                
+                // Add to pending batch
+                pendingHexes.insert(hexString)
+                pendingLocationPoints.append((
+                    latitude: location.coordinate.latitude,
+                    longitude: location.coordinate.longitude,
+                    h3Index: hexString
+                ))
+                
+                // Trigger city detection
+                let clLocation = CLLocation(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+                detectCity(from: clLocation, h3Index: hexString)
+                
+                print("🔄 Batched (pending: \(pendingHexes.count) hexes)")
+            }
         } else {
             print("⚠️ H3 Error: Could not generate index. Error code: \(error)")
         }
@@ -91,60 +296,39 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
         print("📍 Visit detected: \(visit.coordinate.latitude), \(visit.coordinate.longitude)")
-        print("   Arrival: \(visit.arrivalDate)")
-        print("   Departure: \(visit.departureDate)")
         
-        // Treat visits as location updates
         userLocation = visit.coordinate
         
         let latRads = visit.coordinate.latitude * .pi / 180.0
         let lonRads = visit.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
         var h3Index: H3Index = 0
-        let error = latLngToCell(&coord, Int32(10), &h3Index)
+        let error = latLngToCell(&coord, Int32(9), &h3Index)
         
         if error == 0 {
             let hexString = String(h3Index, radix: 16)
-            saveLocation(latitude: visit.coordinate.latitude,
-                        longitude: visit.coordinate.longitude,
-                        h3Index: hexString)
+            
+            if hexString != lastSavedHex {
+                lastSavedHex = hexString
+                pendingHexes.insert(hexString)
+                pendingLocationPoints.append((
+                    latitude: visit.coordinate.latitude,
+                    longitude: visit.coordinate.longitude,
+                    h3Index: hexString
+                ))
+                
+                print("🔄 Visit batched")
+            }
         }
-    }
-    
-    // MARK: - Data Persistence
-    
-    private func saveLocation(latitude: Double, longitude: Double, h3Index: String) {
-        guard let context = modelContext else { return }
-        
-        let locationPoint = LocationPoint(latitude: latitude, longitude: longitude, h3Index: h3Index)
-        context.insert(locationPoint)
-        
-        let descriptor = FetchDescriptor<ExploredHex>(
-            predicate: #Predicate { $0.h3Index == h3Index }
-        )
-        
-        if let existingHex = try? context.fetch(descriptor).first {
-            existingHex.recordVisit()
-        } else {
-            let newHex = ExploredHex(h3Index: h3Index)
-            context.insert(newHex)
-            print("✨ New hex discovered!")
-        }
-        
-        let location = CLLocation(latitude: latitude, longitude: longitude)
-        detectCity(from: location, h3Index: h3Index)
-        
-        try? context.save()
     }
     
     // MARK: - City Detection (Modern MapKit)
-
+    
     private func detectCity(from location: CLLocation, h3Index: String) {
         guard let context = modelContext else { return }
         
         Task {
             do {
-                // Use MKLocalSearch with coordinate query
                 let searchRequest = MKLocalSearch.Request()
                 searchRequest.naturalLanguageQuery = "city"
                 searchRequest.region = MKCoordinateRegion(
@@ -159,7 +343,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                 guard let firstItem = response.mapItems.first,
                       let city = firstItem.placemark.locality ?? firstItem.placemark.subLocality,
                       let country = firstItem.placemark.country else {
-                    print("⚠️ Could not determine city")
                     return
                 }
                 
@@ -228,7 +411,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                     let lonRads = lon * .pi / 180.0
                     var coord = LatLng(lat: latRads, lng: lonRads)
                     var h3Index: H3Index = 0
-                    let error = latLngToCell(&coord, Int32(10), &h3Index)
+                    let error = latLngToCell(&coord, Int32(9), &h3Index)
                     
                     if error == 0 {
                         hexSet.insert(String(h3Index, radix: 16))
@@ -242,5 +425,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             try? context.save()
             print("🔷 \(city.cityName): \(hexSet.count) total hexes calculated")
         }
+    }
+    
+    deinit {
+        flushTimer?.invalidate()
+        flushPendingData()
     }
 }

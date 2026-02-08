@@ -12,36 +12,37 @@ struct MapView: View {
     
     var body: some View {
         Map(position: $position) {
-            // Show user location
-            if let userLocation {
-                Annotation("You", coordinate: userLocation) {
-                    ZStack {
-                        Circle()
-                            .fill(.blue)
-                            .frame(width: 20, height: 20)
-                        Circle()
-                            .stroke(.white, lineWidth: 3)
-                            .frame(width: 20, height: 20)
-                        Circle()
-                            .stroke(.blue.opacity(0.3), lineWidth: 2)
-                            .frame(width: 40, height: 40)
-                    }
-                }
-            }
+            // Use MapKit's built-in user location (blue dot)
+            UserAnnotation()
+            
+            // FOG OF WAR: Cover entire world with dark overlay
+            MapPolygon(coordinates: worldBoundary())
+                .foregroundStyle(.black.opacity(0.6))
+                .stroke(.clear, lineWidth: 0)
             
             // Show explored hexagons
             ForEach(exploredHexes, id: \.h3Index) { hex in
                 if let polygon = hexToPolygon(h3Index: hex.h3Index) {
                     MapPolygon(coordinates: polygon)
-                        .foregroundStyle(.green.opacity(0.3))
-                        .stroke(.green, lineWidth: 1)
+                        .foregroundStyle(.clear)
+                        .stroke(.green, lineWidth: 2)
                 }
             }
         }
         .mapStyle(mapStyle)
-        .mapControlVisibility(.hidden) // Hide default controls
-        // Only center on user location ONCE when first loaded
+        .mapControlVisibility(.hidden)
+        .onAppear {
+            // Initial positioning on first load
+            if let userLocation, !hasInitiallyPositioned {
+                position = .region(MKCoordinateRegion(
+                    center: userLocation,
+                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                ))
+                hasInitiallyPositioned = true
+            }
+        }
         .onChange(of: userLocation) { oldValue, newValue in
+            // Also respond to location changes if not yet positioned
             if let newValue, !hasInitiallyPositioned {
                 position = .region(MKCoordinateRegion(
                     center: newValue,
@@ -51,10 +52,10 @@ struct MapView: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            // Custom location button (bottom left)
+            // Recenter button
             Button {
                 if let userLocation {
-                    withAnimation {
+                    withAnimation(.easeInOut(duration: 0.5)) {
                         position = .region(MKCoordinateRegion(
                             center: userLocation,
                             span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
@@ -70,11 +71,12 @@ struct MapView: View {
                     .clipShape(Circle())
                     .shadow(radius: 4)
             }
+            .disabled(userLocation == nil) // Disable if no location yet
+            .opacity(userLocation == nil ? 0.5 : 1.0)
             .padding(.leading, 16)
-            .padding(.bottom, 100) // Above safe area
+            .padding(.bottom, 100)
         }
         .overlay(alignment: .bottomTrailing) {
-            // Map style picker (bottom right)
             Menu {
                 Button {
                     mapStyle = .standard
@@ -103,11 +105,20 @@ struct MapView: View {
                     .shadow(radius: 4)
             }
             .padding(.trailing, 16)
-            .padding(.bottom, 100) // Above safe area
+            .padding(.bottom, 100)
         }
     }
     
-    // Convert H3 index to polygon coordinates
+    private func worldBoundary() -> [CLLocationCoordinate2D] {
+        return [
+            CLLocationCoordinate2D(latitude: 85, longitude: -180),
+            CLLocationCoordinate2D(latitude: 85, longitude: 180),
+            CLLocationCoordinate2D(latitude: -85, longitude: 180),
+            CLLocationCoordinate2D(latitude: -85, longitude: -180),
+            CLLocationCoordinate2D(latitude: 85, longitude: -180)
+        ]
+    }
+    
     private func hexToPolygon(h3Index: String) -> [CLLocationCoordinate2D]? {
         guard let index = UInt64(h3Index, radix: 16) else { return nil }
         
@@ -133,7 +144,6 @@ struct MapView: View {
     }
 }
 
-// MARK: - Extensions
 extension CLLocationCoordinate2D: Equatable {
     public static func == (lhs: CLLocationCoordinate2D, rhs: CLLocationCoordinate2D) -> Bool {
         return lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude
