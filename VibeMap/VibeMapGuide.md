@@ -8,10 +8,11 @@ struct VibeMapApp: App {
     
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(locationManager: locationManager)
         }
         .modelContainer(for: [ExploredHex.self, LocationPoint.self, CityExploration.self])
-        .onChange(of: scenePhase) { oldPhase, newPhase in
+        // iOS 17+ overload supports old/new values when you include `initial:`
+        .onChange(of: scenePhase, initial: false) { oldPhase, newPhase in
             switch newPhase {
             case .active:
                 print("📱 App became active")
@@ -27,4 +28,3 @@ struct VibeMapApp: App {
         }
     }
 }
-
