@@ -100,7 +100,7 @@ struct MapView: View {
             .disabled(userLocation == nil)
             .opacity(userLocation == nil ? 0.5 : 1.0)
             .padding(.leading, 16)
-            .padding(.bottom, 100)
+            .padding(.bottom, 40)
         }
         .overlay(alignment: .bottomTrailing) {
              // ... (Keep your Menu/Style Button code here)
@@ -119,7 +119,7 @@ struct MapView: View {
                     .shadow(radius: 4)
             }
             .padding(.trailing, 16)
-            .padding(.bottom, 100)
+            .padding(.bottom, 40)
         }
     }
     
