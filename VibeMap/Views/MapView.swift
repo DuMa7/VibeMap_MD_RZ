@@ -1,39 +1,44 @@
 import SwiftUI
 import MapKit
-import H3
 
 struct MapView: View {
     @State private var position: MapCameraPosition = .automatic
     @State private var mapStyle: MapStyle = .standard
     @State private var hasInitiallyPositioned = false
-    
-    // NEW: Track zoom level to optimize rendering
     @State private var currentSpan: Double = 0.05
+    
+    // NEW: Cache the heavy calculation here so we don't freeze the UI
+    @State private var cachedRuralHexes: [String] = []
     
     var exploredHexes: [ExploredHex]
     var userLocation: CLLocationCoordinate2D?
     
-    // Performance Threshold: Hide hexes if zoomed out further than this
-    // 0.2 is roughly "Metropolitan Area" size. 1.0 is "State/Province" size.
     private let hexRenderThreshold = 0.5
     
     var body: some View {
         Map(position: $position) {
             UserAnnotation()
             
-            // FOG OF WAR: Cover world
+            // FOG OF WAR
             MapPolygon(coordinates: worldBoundary())
                 .foregroundStyle(.black.opacity(0.6))
                 .stroke(.clear, lineWidth: 0)
             
-            // PERFORMANCE: Only render hexes if we are zoomed in enough
             if currentSpan < hexRenderThreshold {
-                ForEach(exploredHexes, id: \.h3Index) { hex in
+                // 1. Urban Hexes (Fast)
+                ForEach(exploredHexes.filter { $0.isUrban }, id: \.h3Index) { hex in
                     if let polygon = hexToPolygon(h3Index: hex.h3Index) {
                         MapPolygon(coordinates: polygon)
-                             // NEW: Orange fill with transparency
                             .foregroundStyle(.orange.opacity(0.4))
-                            // NEW: Thinner orange border
+                            .stroke(.orange, lineWidth: 1)
+                    }
+                }
+                
+                // 2. Rural Hexes (Read from CACHE, not calculated live)
+                ForEach(cachedRuralHexes, id: \.self) { parentHexIndex in
+                    if let polygon = hexToPolygon(h3Index: parentHexIndex) {
+                        MapPolygon(coordinates: polygon)
+                            .foregroundStyle(.orange.opacity(0.4))
                             .stroke(.orange, lineWidth: 1)
                     }
                 }
@@ -45,6 +50,10 @@ struct MapView: View {
         .onMapCameraChange(frequency: .continuous) { context in
             currentSpan = context.region.span.latitudeDelta
         }
+        // NEW: Recalculate only when data actually changes
+        .onChange(of: exploredHexes) { oldValue, newValue in
+            recalculateRuralHexes()
+        }
         .onAppear {
             if let userLocation, !hasInitiallyPositioned {
                 position = .region(MKCoordinateRegion(
@@ -53,6 +62,8 @@ struct MapView: View {
                 ))
                 hasInitiallyPositioned = true
             }
+            // Trigger calculation on load
+            recalculateRuralHexes()
         }
         .onChange(of: userLocation) { oldValue, newValue in
             if let newValue, !hasInitiallyPositioned {
@@ -63,23 +74,19 @@ struct MapView: View {
                 hasInitiallyPositioned = true
             }
         }
-        // ... (Keep existing overlay buttons for Style and Recenter) ...
         .overlay(alignment: .top) {
-            // Optional: Visual indicator when hexes are hidden
             if currentSpan >= hexRenderThreshold {
                 Text("Zoom in to see detailed exploration")
                     .font(.caption)
                     .padding(8)
                     .background(.ultraThinMaterial)
                     .cornerRadius(8)
-                    .padding(.top, 60)
+                    .padding(.top, 100)
                     .transition(.opacity)
             }
         }
         .overlay(alignment: .bottomLeading) {
-             // ... (Keep your Recenter Button code here)
-             // Copy from original file
-             Button {
+            Button {
                 if let userLocation {
                     withAnimation(.easeInOut(duration: 0.5)) {
                         position = .region(MKCoordinateRegion(
@@ -103,9 +110,7 @@ struct MapView: View {
             .padding(.bottom, 40)
         }
         .overlay(alignment: .bottomTrailing) {
-             // ... (Keep your Menu/Style Button code here)
-             // Copy from original file
-              Menu {
+            Menu {
                 Button { mapStyle = .standard } label: { Label("Standard", systemImage: "map") }
                 Button { mapStyle = .hybrid } label: { Label("Satellite", systemImage: "globe.americas.fill") }
                 Button { mapStyle = .imagery } label: { Label("Imagery", systemImage: "photo") }
@@ -123,7 +128,29 @@ struct MapView: View {
         }
     }
     
-    // ... (Keep existing private helper methods worldBoundary and hexToPolygon) ...
+    // MARK: - Optimization Logic
+    
+    private func recalculateRuralHexes() {
+        // Run this heavy work in the background!
+        Task {
+            let ruralHexes = exploredHexes.filter { !$0.isUrban }
+            
+            // Heavy math loop
+            let parentIndices = ruralHexes.compactMap {
+                cellToParentHex(h3Index: $0.h3Index, parentRes: 9)
+            }
+            
+            let uniqueParents = Array(Set(parentIndices))
+            
+            // Update UI on main thread
+            await MainActor.run {
+                self.cachedRuralHexes = uniqueParents
+            }
+        }
+    }
+    
+    // MARK: - Map Helpers
+    
     private func worldBoundary() -> [CLLocationCoordinate2D] {
         return [
             CLLocationCoordinate2D(latitude: 85, longitude: -180),
@@ -135,11 +162,12 @@ struct MapView: View {
     }
     
     private func hexToPolygon(h3Index: String) -> [CLLocationCoordinate2D]? {
-        // Reuse your existing H3 logic from previous file
         guard let index = UInt64(h3Index, radix: 16) else { return nil }
         var cellBoundary = CellBoundary()
         let error = cellToBoundary(index, &cellBoundary)
+        
         guard error == 0 else { return nil }
+        
         var coordinates: [CLLocationCoordinate2D] = []
         withUnsafeBytes(of: cellBoundary.verts) { rawBuffer in
             let vertsBuffer = rawBuffer.bindMemory(to: LatLng.self)
@@ -151,6 +179,16 @@ struct MapView: View {
             }
         }
         return coordinates
+    }
+    
+    private func cellToParentHex(h3Index: String, parentRes: Int) -> String? {
+        guard let index = UInt64(h3Index, radix: 16) else { return nil }
+        var parent: UInt64 = 0
+        // Call into the H3 C API to compute the parent cell at the requested resolution
+        let error = cellToParent(index, Int32(parentRes), &parent)
+        guard error == 0 else { return nil }
+        // Return as lowercase hex string to match input format
+        return String(parent, radix: 16)
     }
 }
 

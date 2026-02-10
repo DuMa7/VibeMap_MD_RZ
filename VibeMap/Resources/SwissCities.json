@@ -1,0 +1,83 @@
+[
+    {"name": "Zurich", "population": 447082},
+    {"name": "Zürich", "population": 447082},
+    
+    {"name": "Geneva", "population": 203840},
+    {"name": "Genève", "population": 203840},
+    
+    {"name": "Basel", "population": 173552},
+    {"name": "Bâle", "population": 173552},
+    
+    {"name": "Lausanne", "population": 141418},
+    
+    {"name": "Bern", "population": 134506},
+    {"name": "Berne", "population": 134506},
+    
+    {"name": "Winterthur", "population": 116906},
+    
+    {"name": "Lucerne", "population": 83840},
+    {"name": "Luzern", "population": 83840},
+    
+    {"name": "St. Gallen", "population": 76931},
+    {"name": "Saint Gallen", "population": 76931},
+    
+    {"name": "Lugano", "population": 62464},
+    
+    {"name": "Biel/Bienne", "population": 55988},
+    {"name": "Biel", "population": 55988},
+    {"name": "Bienne", "population": 55988},
+    
+    {"name": "Thun", "population": 43670},
+    {"name": "Bellinzona", "population": 44270},
+    {"name": "Köniz", "population": 42409},
+    
+    {"name": "Fribourg", "population": 37653},
+    {"name": "Freiburg", "population": 37653},
+    
+    {"name": "Schaffhausen", "population": 37713},
+    {"name": "Chur", "population": 38129},
+    {"name": "Uster", "population": 35748},
+    {"name": "Sion", "population": 35650},
+    {"name": "Vernier", "population": 36572},
+    {"name": "Lancy", "population": 34656},
+    {"name": "Emmen", "population": 31573},
+    {"name": "Zug", "population": 31469},
+    {"name": "Yverdon-les-Bains", "population": 29977},
+    {"name": "Dübendorf", "population": 30801},
+    {"name": "Kriens", "population": 28983},
+    {"name": "Dietikon", "population": 28162},
+    {"name": "Rapperswil-Jona", "population": 27740},
+    {"name": "Montreux", "population": 26230},
+    {"name": "Frauenfeld", "population": 26093},
+    {"name": "Wetzikon", "population": 26018},
+    {"name": "Baar", "population": 24996},
+    {"name": "Meyrin", "population": 26517},
+    {"name": "Wil", "population": 24541},
+    {"name": "Bulle", "population": 25722},
+    {"name": "Kreuzlingen", "population": 22788},
+    {"name": "Carouge", "population": 22929},
+    {"name": "Wädenswil", "population": 21792},
+    {"name": "Riehen", "population": 22086},
+    {"name": "Aarau", "population": 21807},
+    {"name": "Allschwil", "population": 21654},
+    {"name": "Renens", "population": 21086},
+    {"name": "Wettingen", "population": 21094},
+    {"name": "Horgen", "population": 23628},
+    {"name": "Nyon", "population": 22465},
+    {"name": "Vevey", "population": 19738},
+    {"name": "Bülach", "population": 23624},
+    {"name": "Reinach", "population": 19667},
+    {"name": "Baden", "population": 19839},
+    {"name": "Adliswil", "population": 19243},
+    {"name": "Volketswil", "population": 19412},
+    {"name": "Kloten", "population": 20980},
+    {"name": "Onex", "population": 18977},
+    {"name": "Schlieren", "population": 20350},
+    {"name": "Gossau", "population": 18430},
+    {"name": "Glarus Nord", "population": 19428},
+    {"name": "Muttenz", "population": 17917},
+    {"name": "Regensdorf", "population": 18739},
+    {"name": "Thalwil", "population": 18392},
+    {"name": "Pully", "population": 18984},
+    {"name": "Olten", "population": 18339}
+]

@@ -44,11 +44,24 @@ class PopulationManager {
     
     /// Returns true if the city has more than the threshold population
     func isBigCity(_ cityName: String, threshold: Int = 10000) -> Bool {
-        guard let pop = cityPopulations[cityName] else {
-            // City not in list? Assume Rural (Small)
-            return false
+        // 1. Direct match
+        if let pop = cityPopulations[cityName] {
+            return pop >= threshold
         }
-        return pop >= threshold
+            
+        // 2. Case-insensitive match (Backup)
+        let lowerName = cityName.lowercased()
+        let match = cityPopulations.first { key, _ in
+            key.lowercased() == lowerName
+        }
+            
+        if let (_, pop) = match {
+            return pop >= threshold
+        }
+            
+        // 3. Debugging: Print failure to help you fix missing names
+        print("⚠️ City not found in DB: '\(cityName)'. Defaulting to Rural.")
+        return false
     }
     
     func getPopulation(for cityName: String) -> Int? {

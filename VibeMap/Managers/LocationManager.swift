@@ -197,7 +197,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             if let existingHex = try? context.fetch(descriptor).first {
                 existingHex.recordVisit()
             } else {
-                let newHex = ExploredHex(h3Index: hexIndex)
+                let isBigCity = PopulationManager.shared.isBigCity(self.currentCity ?? "", threshold: 10000)
+                let newHex = ExploredHex(h3Index: hexIndex, isUrban: isBigCity)
+                
                 context.insert(newHex)
             }
         }
@@ -260,7 +262,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         let lonRads = location.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
         var h3Index: H3Index = 0
-        let error = latLngToCell(&coord, Int32(9), &h3Index)
+        let error = latLngToCell(&coord, Int32(10), &h3Index)
         
         if error == 0 {
             let hexString = String(h3Index, radix: 16)

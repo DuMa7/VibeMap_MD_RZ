@@ -57,5 +57,17 @@ struct H3Wrapper {
         }
         return coords
     }
+    
+    /// Converts a child hex (e.g. Res 10) to a coarser parent hex (e.g. Res 9)
+    static func cellToParent(h3Index: String, parentRes: Int32) -> String? {
+        guard let index = UInt64(h3Index, radix: 16) else { return nil }
+        var parentIndex: H3Index = 0
+        let error = H3.cellToParent(index, parentRes, &parentIndex)
+        
+        if error == 0 {
+            return String(parentIndex, radix: 16)
+        }
+        return nil
+    }
 }
     

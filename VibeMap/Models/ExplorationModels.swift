@@ -11,10 +11,19 @@ import SwiftData
 
 @Model
 class ExploredHex {
-    @Attribute(.unique) var h3Index: String  // Hex index as string
-    var firstVisited: Date
-    var lastVisited: Date
-    var visitCount: Int
+    @Attribute(.unique) var h3Index: String
+    var visitCount: Int = 1
+    var firstVisited: Date = Date()
+    var lastVisited: Date = Date()
+    
+    // NEW: Track if this is a high-density area
+    // Default to false (Rural)
+    var isUrban: Bool = false
+    
+    init(h3Index: String, isUrban: Bool = false) { // Updated Init
+        self.h3Index = h3Index
+        self.isUrban = isUrban
+    }
     
     init(h3Index: String, firstVisited: Date = Date()) {
         self.h3Index = h3Index
@@ -24,11 +33,11 @@ class ExploredHex {
     }
     
     func recordVisit() {
-        self.lastVisited = Date()
-        self.visitCount += 1
+        visitCount += 1
+        lastVisited = Date()
     }
 }
-
+    
 @Model
 class LocationPoint {
     var latitude: Double
