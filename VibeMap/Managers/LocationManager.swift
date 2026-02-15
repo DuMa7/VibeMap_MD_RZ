@@ -18,22 +18,25 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     private var currentCity: String?
     private var currentCountry: String?
     
-    // PHASE 1: Batch updates & hex geofencing
+    // PHASE 1: Improved batch system
     private var lastSavedHex: String?
     private var pendingHexes: Set<String> = []
     private var pendingLocationPoints: [(latitude: Double, longitude: Double, h3Index: String)] = []
-    private var lastFlushTime = Date()
-    private let flushInterval: TimeInterval = 15 * 60 // 15 minutes
-    private var flushTimer: Timer?
+    
+    // NEW: Track app state
+    private var isInForeground = true
+    
+    // NEW: Background task identifier
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     
     // PHASE 2: Motion detection
     private var currentProfile: TrackingProfile = .unknown
     
     enum TrackingProfile {
-        case walking      // Active movement
-        case stationary   // Not moving
-        case driving      // Fast movement
-        case unknown      // Fallback
+        case walking
+        case stationary
+        case driving
+        case unknown
         
         var description: String {
             switch self {
@@ -50,12 +53,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.delegate = self
         manager.allowsBackgroundLocationUpdates = true
         manager.pausesLocationUpdatesAutomatically = false
+        manager.showsBackgroundLocationIndicator = true // Shows blue bar in iOS to indicate background tracking
         
         // Start with unknown profile
         applyProfile(.unknown)
-        
-        // Setup auto-flush timer
-        setupFlushTimer()
     }
     
     func requestPermission() {
@@ -120,27 +121,25 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         
         switch profile {
         case .walking:
-            // High precision for walking
             manager.desiredAccuracy = kCLLocationAccuracyBest
-            manager.distanceFilter = 20 // ~1/8 of a hex at resolution 9
+            manager.distanceFilter = 20
             manager.startUpdatingLocation()
             print("📍 Tracking mode: WALKING (20m filter, best accuracy)")
             
         case .driving:
-            // Medium precision for driving
             manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-            manager.distanceFilter = 50 // Faster movement = larger filter OK
+            manager.distanceFilter = 50
             manager.startUpdatingLocation()
             print("📍 Tracking mode: DRIVING (50m filter, medium accuracy)")
             
         case .stationary:
-            // Ultra low power when stationary
-            manager.stopUpdatingLocation()
+            // In background, we still want SOME updates
+            // Use significant changes + visit monitoring
             manager.startMonitoringSignificantLocationChanges()
-            print("📍 Tracking mode: STATIONARY (significant changes only)")
+            manager.startMonitoringVisits() // This was missing!
+            print("📍 Tracking mode: STATIONARY (significant changes + visits)")
             
         case .unknown:
-            // Balanced default
             manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
             manager.distanceFilter = 30
             manager.startUpdatingLocation()
@@ -148,26 +147,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         }
     }
     
-    // MARK: - Batch Update System
-    
-    private func setupFlushTimer() {
-        // Invalidate any existing timer
-        flushTimer?.invalidate()
-        
-        // Create timer on main thread
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.flushTimer = Timer.scheduledTimer(withTimeInterval: self.flushInterval, repeats: true) { [weak self] _ in
-                print("⏰ Timer triggered flush")
-                self?.flushPendingData()
-            }
-            
-            // Ensure timer runs in background
-            if let timer = self.flushTimer {
-                RunLoop.main.add(timer, forMode: .common)
-            }
-        }
-    }
+    // MARK: - NEW: Smart Flushing System
     
     func flushPendingData() {
         guard let context = modelContext else { return }
@@ -177,6 +157,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         let pointCount = pendingLocationPoints.count
         
         print("💾 Flushing \(hexCount) hexes and \(pointCount) location points to database...")
+        
+        // Begin background task to ensure completion
+        beginBackgroundTask()
         
         // Save all pending location points
         for point in pendingLocationPoints {
@@ -212,20 +195,47 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             // Clear pending data
             pendingHexes.removeAll()
             pendingLocationPoints.removeAll()
-            lastFlushTime = Date()
         } catch {
             print("❌ Error flushing data: \(error.localizedDescription)")
+        }
+        
+        // End background task
+        endBackgroundTask()
+    }
+    
+    // NEW: Background task management
+    private func beginBackgroundTask() {
+        backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
+            self?.endBackgroundTask()
+        }
+    }
+    
+    private func endBackgroundTask() {
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
         }
     }
     
     func applicationDidBecomeActive() {
-        print("📱 App became active - flushing pending data")
+        print("📱 App became active")
+        isInForeground = true
         flushPendingData()
+        
+        // Re-enable motion detection
+        if CMMotionActivityManager.isActivityAvailable() {
+            startMotionDetection()
+        }
     }
     
     func applicationDidEnterBackground() {
-        print("📱 App entering background - flushing pending data")
+        print("📱 App entering background")
+        isInForeground = false
         flushPendingData()
+        
+        // Motion activity doesn't work well in background
+        // Switch to a conservative profile
+        applyProfile(.unknown)
     }
     
     // MARK: - CLLocationManagerDelegate
@@ -249,10 +259,16 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         
-        // Filter out stale locations (older than 10 seconds)
+        // Filter out stale locations
         let locationAge = abs(location.timestamp.timeIntervalSinceNow)
         guard locationAge < 10 else {
             print("⏭️ Skipping stale location (age: \(Int(locationAge))s)")
+            return
+        }
+        
+        // Filter out inaccurate locations
+        guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else {
+            print("⏭️ Skipping inaccurate location (accuracy: \(location.horizontalAccuracy)m)")
             return
         }
         
@@ -269,7 +285,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             
             // HEX GEOFENCING: Only process if we entered a new hex
             if hexString != lastSavedHex {
-                print("📍 New hex entered: \(hexString) [\(currentProfile.description)]")
+                print("📍 New hex entered: \(hexString) [\(currentProfile.description)] [Foreground: \(isInForeground)]")
                 
                 lastSavedHex = hexString
                 
@@ -285,7 +301,21 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                 let clLocation = CLLocation(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
                 detectCity(from: clLocation, h3Index: hexString)
                 
-                print("🔄 Batched (pending: \(pendingHexes.count) hexes)")
+                // NEW: IMMEDIATE FLUSH STRATEGY
+                if isInForeground {
+                    // In foreground: flush after every 5 new hexes OR if batch is getting old
+                    if pendingHexes.count >= 5 {
+                        print("🔄 Auto-flushing (5 hexes reached in foreground)")
+                        flushPendingData()
+                    }
+                } else {
+                    // In background: flush immediately to ensure data is saved
+                    // This is critical because background execution time is limited
+                    print("🔄 Immediate flush (background mode)")
+                    flushPendingData()
+                }
+                
+                print("📊 Pending: \(pendingHexes.count) hexes")
             }
         } else {
             print("⚠️ H3 Error: Could not generate index. Error code: \(error)")
@@ -299,13 +329,16 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
         print("📍 Visit detected: \(visit.coordinate.latitude), \(visit.coordinate.longitude)")
         
+        // Process visit immediately
+        beginBackgroundTask()
+        
         userLocation = visit.coordinate
         
         let latRads = visit.coordinate.latitude * .pi / 180.0
         let lonRads = visit.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
         var h3Index: H3Index = 0
-        let error = latLngToCell(&coord, Int32(9), &h3Index)
+        let error = latLngToCell(&coord, Int32(10), &h3Index) // Changed to resolution 10 to match
         
         if error == 0 {
             let hexString = String(h3Index, radix: 16)
@@ -319,9 +352,13 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                     h3Index: hexString
                 ))
                 
-                print("🔄 Visit batched")
+                // Flush visits immediately
+                print("🔄 Flushing visit immediately")
+                flushPendingData()
             }
         }
+        
+        endBackgroundTask()
     }
     
     // MARK: - City Detection (Modern MapKit)
@@ -413,7 +450,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                     let lonRads = lon * .pi / 180.0
                     var coord = LatLng(lat: latRads, lng: lonRads)
                     var h3Index: H3Index = 0
-                    let error = latLngToCell(&coord, Int32(9), &h3Index)
+                    let error = latLngToCell(&coord, Int32(10), &h3Index) // Changed to 10 to match
                     
                     if error == 0 {
                         hexSet.insert(String(h3Index, radix: 16))
@@ -430,7 +467,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
     
     deinit {
-        flushTimer?.invalidate()
         flushPendingData()
+        endBackgroundTask()
     }
 }
