@@ -23,6 +23,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     private var pendingHexes: Set<String> = []
     private var pendingLocationPoints: [(latitude: Double, longitude: Double, h3Index: String)] = []
     
+    // Track the last time we flushed pending data
+    private var lastFlushTime: Date? = nil
+    
     // NEW: Track app state
     private var isInForeground = true
     
@@ -173,35 +176,37 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         
         // Save all pending hexes
         for hexIndex in pendingHexes {
-            let descriptor = FetchDescriptor<ExploredHex>(
-                predicate: #Predicate { $0.h3Index == hexIndex }
-            )
-            
-            if let existingHex = try? context.fetch(descriptor).first {
-                existingHex.recordVisit()
-            } else {
-                let isBigCity = PopulationManager.shared.isBigCity(self.currentCity ?? "", threshold: 10000)
-                let newHex = ExploredHex(h3Index: hexIndex, isUrban: isBigCity)
-                
-                context.insert(newHex)
-            }
-        }
+              let descriptor = FetchDescriptor<ExploredHex>(
+                  predicate: #Predicate { $0.h3Index == hexIndex }
+              )
+              
+              if let existingHex = try? context.fetch(descriptor).first {
+                  existingHex.recordVisit()
+              } else {
+                  let isBigCity = PopulationManager.shared.isBigCity(self.currentCity ?? "", threshold: 10000)
+                  let newHex = ExploredHex(h3Index: hexIndex, isUrban: isBigCity)
+                  
+                  // Simplified - no geographic attribution for now
+                  newHex.communeName = self.currentCity
+                  newHex.countryName = self.currentCountry
+                  
+                  context.insert(newHex)
+              }
+          }
         
         // Save to database
         do {
-            try context.save()
-            print("✅ Successfully flushed data to database")
-            
-            // Clear pending data
-            pendingHexes.removeAll()
-            pendingLocationPoints.removeAll()
-        } catch {
-            print("❌ Error flushing data: \(error.localizedDescription)")
-        }
-        
-        // End background task
-        endBackgroundTask()
-    }
+             try context.save()
+             print("✅ Successfully flushed data to database")
+             
+             // Clear pending data
+             pendingHexes.removeAll()
+             pendingLocationPoints.removeAll()
+             lastFlushTime = Date()
+         } catch {
+             print("❌ Error flushing data: \(error.localizedDescription)")
+         }
+     }
     
     // NEW: Background task management
     private func beginBackgroundTask() {
@@ -273,6 +278,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         }
         
         userLocation = location.coordinate
+        GenevaDetector.shared.detect(coordinate: location.coordinate)
         
         let latRads = location.coordinate.latitude * .pi / 180.0
         let lonRads = location.coordinate.longitude * .pi / 180.0
@@ -471,3 +477,4 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         endBackgroundTask()
     }
 }
+

@@ -18,12 +18,12 @@ struct MapView: View {
     var body: some View {
         Map(position: $position) {
             UserAnnotation()
-            
+            //DELETE ----(appear only here)-----------------------
             // FOG OF WAR
             MapPolygon(coordinates: worldBoundary())
                 .foregroundStyle(.black.opacity(0.6))
                 .stroke(.clear, lineWidth: 0)
-            
+            //Until Here --------------------------
             if currentSpan < hexRenderThreshold {
                 // 1. Urban Hexes (Fast)
                 ForEach(exploredHexes.filter { $0.isUrban }, id: \.h3Index) { hex in

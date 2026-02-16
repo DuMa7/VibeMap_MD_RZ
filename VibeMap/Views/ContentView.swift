@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var showStats = false
     @State private var showSettings = false
     @State private var isLoading = true
+    @State private var genevaDetector = GenevaDetector.shared
+
     
     // Celebration State
     @State private var showConfetti = false
@@ -145,7 +147,7 @@ struct ContentView: View {
                     HStack(spacing: 12) {
                         // Left: City Name
                         if let city = cities.first {
-                            Text(city.cityName)
+                            Text(genevaDetector.getDisplayName())
                                 .font(.subheadline)
                                 .bold()
                                 .foregroundStyle(.primary)

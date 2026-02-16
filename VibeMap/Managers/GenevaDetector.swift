@@ -2,6 +2,14 @@
 //  GenevaDetector.swift
 //  VibeMap
 //
+//  Created by Jenna Jacquemyns on 16.02.2026.
+//
+
+
+//
+//  GenevaDetector.swift
+//  VibeMap
+//
 //  Created by Claude on 15.02.2026.
 //
 

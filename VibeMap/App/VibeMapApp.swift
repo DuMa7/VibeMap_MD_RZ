@@ -5,12 +5,11 @@ import SwiftData
 struct VibeMapApp: App {
     @Environment(\.scenePhase) private var scenePhase
     
-    // 1. This is the SINGLE "Source of Truth" for the whole app
+    // Location manager
     @State private var locationManager = LocationManager()
     
     var body: some Scene {
         WindowGroup {
-            // 2. Inject it into ContentView
             ContentView()
                 .environment(locationManager)
         }
