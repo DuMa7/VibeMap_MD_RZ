@@ -1,10 +1,3 @@
-//
-//  BackupModels.swift
-//  VibeMap
-//
-//  Created by Jenna Jacquemyns on 08.02.2026.
-//
-
 import Foundation
 
 // A container for all our app data
@@ -12,22 +5,24 @@ struct BackupData: Codable {
     let version: Int
     let timestamp: Date
     let hexes: [HexBackupDTO]
-    let cities: [CityBackupDTO]
+    let regions: [RegionBackupDTO] // Changed from cities
 }
 
 struct HexBackupDTO: Codable {
     let h3Index: String
+    let resolution: Int // NEW
+    let regionID: String? // NEW
     let visitCount: Int
     let firstVisited: Date
     let lastVisited: Date
 }
 
-struct CityBackupDTO: Codable {
-    let cityName: String
-    let country: String
-    let centerLat: Double
-    let centerLon: Double
-    let radius: Double
+struct RegionBackupDTO: Codable {
+    let regionID: String
+    let name: String
+    let type: String
     let totalHexes: Int
     let exploredHexes: [String]
+    let firstVisited: Date
+    let lastVisited: Date
 }

@@ -2,41 +2,59 @@ import SwiftUI
 import MapKit
 
 struct MapView: View {
-    @State private var position: MapCameraPosition = .automatic
-    @State private var mapStyle: MapStyle = .standard
-    @State private var hasInitiallyPositioned = false
-    @State private var currentSpan: Double = 0.05
+    @Binding var position: MapCameraPosition
+    @Binding var currentSpan: Double
+    @Binding var centerCoordinate: CLLocationCoordinate2D? // NEW: Exposes the map's center
     
-    // NEW: Cache the heavy calculation here so we don't freeze the UI
-    @State private var cachedRuralHexes: [String] = []
+    @State private var mapStyle: MapStyle = .standard
     
     var exploredHexes: [ExploredHex]
+    var regions: [RegionExploration]
+    var layerManager: MapLayerManager
     var userLocation: CLLocationCoordinate2D?
     
-    private let hexRenderThreshold = 0.5
+    private var visitedCantonIDs: Set<String> {
+        let ids = regions.compactMap { region in
+            RegionMetadataManager.shared.municipalities[region.regionID]?.cantonID
+        }
+        return Set(ids)
+    }
     
     var body: some View {
         Map(position: $position) {
             UserAnnotation()
-            //DELETE ----(appear only here)-----------------------
-            // FOG OF WAR
-            MapPolygon(coordinates: worldBoundary())
-                .foregroundStyle(.black.opacity(0.6))
-                .stroke(.clear, lineWidth: 0)
-            //Until Here --------------------------
-            if currentSpan < hexRenderThreshold {
-                // 1. Urban Hexes (Fast)
-                ForEach(exploredHexes.filter { $0.isUrban }, id: \.h3Index) { hex in
+            
+            if currentSpan >= 10.0 {
+                // World level
+            } else if currentSpan >= 2.0 {
+                ForEach(layerManager.cantons.filter { visitedCantonIDs.contains($0.id) }) { canton in
+                    ForEach(0..<canton.polygons.count, id: \.self) { i in
+                        MapPolygon(coordinates: canton.polygons[i])
+                            .foregroundStyle(.orange.opacity(0.5))
+                            .stroke(.white, lineWidth: 1.5)
+                    }
+                }
+            } else if currentSpan >= 0.2 {
+                ForEach(layerManager.municipalities.filter { muni in
+                    regions.contains(where: { $0.regionID == muni.id })
+                }) { muni in
+                    ForEach(0..<muni.polygons.count, id: \.self) { i in
+                        MapPolygon(coordinates: muni.polygons[i])
+                            .foregroundStyle(colorForRegion(muni.id))
+                            .stroke(.white.opacity(0.3), lineWidth: 0.5)
+                    }
+                }
+            } else if currentSpan >= 0.02 {
+                ForEach(exploredHexes.filter { $0.resolution == 9 }, id: \.h3Index) { hex in
                     if let polygon = hexToPolygon(h3Index: hex.h3Index) {
                         MapPolygon(coordinates: polygon)
                             .foregroundStyle(.orange.opacity(0.4))
                             .stroke(.orange, lineWidth: 1)
                     }
                 }
-                
-                // 2. Rural Hexes (Read from CACHE, not calculated live)
-                ForEach(cachedRuralHexes, id: \.self) { parentHexIndex in
-                    if let polygon = hexToPolygon(h3Index: parentHexIndex) {
+            } else {
+                ForEach(exploredHexes, id: \.h3Index) { hex in
+                    if let polygon = hexToPolygon(h3Index: hex.h3Index) {
                         MapPolygon(coordinates: polygon)
                             .foregroundStyle(.orange.opacity(0.4))
                             .stroke(.orange, lineWidth: 1)
@@ -46,68 +64,10 @@ struct MapView: View {
         }
         .mapStyle(mapStyle)
         .mapControlVisibility(.hidden)
-        .animation(.easeInOut(duration: 1.0), value: exploredHexes)
-        .onMapCameraChange(frequency: .continuous) { context in
+        .animation(.easeInOut(duration: 0.5), value: currentSpan)
+        .onMapCameraChange(frequency: .onEnd) { context in
             currentSpan = context.region.span.latitudeDelta
-        }
-        // NEW: Recalculate only when data actually changes
-        .onChange(of: exploredHexes) { oldValue, newValue in
-            recalculateRuralHexes()
-        }
-        .onAppear {
-            if let userLocation, !hasInitiallyPositioned {
-                position = .region(MKCoordinateRegion(
-                    center: userLocation,
-                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                ))
-                hasInitiallyPositioned = true
-            }
-            // Trigger calculation on load
-            recalculateRuralHexes()
-        }
-        .onChange(of: userLocation) { oldValue, newValue in
-            if let newValue, !hasInitiallyPositioned {
-                position = .region(MKCoordinateRegion(
-                    center: newValue,
-                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                ))
-                hasInitiallyPositioned = true
-            }
-        }
-        .overlay(alignment: .top) {
-            if currentSpan >= hexRenderThreshold {
-                Text("Zoom in to see detailed exploration")
-                    .font(.caption)
-                    .padding(8)
-                    .background(.ultraThinMaterial)
-                    .cornerRadius(8)
-                    .padding(.top, 100)
-                    .transition(.opacity)
-            }
-        }
-        .overlay(alignment: .bottomLeading) {
-            Button {
-                if let userLocation {
-                    withAnimation(.easeInOut(duration: 0.5)) {
-                        position = .region(MKCoordinateRegion(
-                            center: userLocation,
-                            span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                        ))
-                    }
-                }
-            } label: {
-                Image(systemName: "location.fill")
-                    .font(.title3)
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(.blue)
-                    .clipShape(Circle())
-                    .shadow(radius: 4)
-            }
-            .disabled(userLocation == nil)
-            .opacity(userLocation == nil ? 0.5 : 1.0)
-            .padding(.leading, 16)
-            .padding(.bottom, 40)
+            centerCoordinate = context.region.center // NEW: Updates the center coordinate when panning stops
         }
         .overlay(alignment: .bottomTrailing) {
             Menu {
@@ -128,37 +88,12 @@ struct MapView: View {
         }
     }
     
-    // MARK: - Optimization Logic
-    
-    private func recalculateRuralHexes() {
-        // Run this heavy work in the background!
-        Task {
-            let ruralHexes = exploredHexes.filter { !$0.isUrban }
-            
-            // Heavy math loop
-            let parentIndices = ruralHexes.compactMap {
-                cellToParentHex(h3Index: $0.h3Index, parentRes: 9)
-            }
-            
-            let uniqueParents = Array(Set(parentIndices))
-            
-            // Update UI on main thread
-            await MainActor.run {
-                self.cachedRuralHexes = uniqueParents
-            }
+    private func colorForRegion(_ id: String) -> AnyShapeStyle {
+        guard let region = regions.first(where: { $0.regionID == id }), region.totalHexes > 0 else {
+            return AnyShapeStyle(.clear)
         }
-    }
-    
-    // MARK: - Map Helpers
-    
-    private func worldBoundary() -> [CLLocationCoordinate2D] {
-        return [
-            CLLocationCoordinate2D(latitude: 85, longitude: -180),
-            CLLocationCoordinate2D(latitude: 85, longitude: 180),
-            CLLocationCoordinate2D(latitude: -85, longitude: 180),
-            CLLocationCoordinate2D(latitude: -85, longitude: -180),
-            CLLocationCoordinate2D(latitude: 85, longitude: -180)
-        ]
+        let percentage = Double(region.exploredHexes.count) / Double(region.totalHexes)
+        return AnyShapeStyle(.orange.opacity(max(0.15, percentage)))
     }
     
     private func hexToPolygon(h3Index: String) -> [CLLocationCoordinate2D]? {
@@ -179,16 +114,6 @@ struct MapView: View {
             }
         }
         return coordinates
-    }
-    
-    private func cellToParentHex(h3Index: String, parentRes: Int) -> String? {
-        guard let index = UInt64(h3Index, radix: 16) else { return nil }
-        var parent: UInt64 = 0
-        // Call into the H3 C API to compute the parent cell at the requested resolution
-        let error = cellToParent(index, Int32(parentRes), &parent)
-        guard error == 0 else { return nil }
-        // Return as lowercase hex string to match input format
-        return String(parent, radix: 16)
     }
 }
 

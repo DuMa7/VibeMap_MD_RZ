@@ -1,39 +1,26 @@
-//
-//  ExplorationModels.swift
-//  VibeMap
-//
-//  Created by Jenna Jacquemyns on 07.02.2026.
-//  Updated by Claude on 15.02.2026 - Added geographic attribution
-//
-
-
 import Foundation
 import SwiftData
 
 @Model
 class ExploredHex {
     @Attribute(.unique) var h3Index: String
+    var resolution: Int // NEW: 9 (rural/lakes) or 10 (urban/street)
     var visitCount: Int = 1
     var firstVisited: Date = Date()
     var lastVisited: Date = Date()
     
-    // Track if this is a high-density area
-    var isUrban: Bool = false
-    
-    // NEW: Geographic attribution
+    // Geographic attribution matching SQLite
+    var regionID: String?
     var communeName: String?
     var cantonName: String?
     var countryName: String?
     
-    init(h3Index: String, isUrban: Bool = false) {
+    init(h3Index: String, resolution: Int, regionID: String? = nil) {
         self.h3Index = h3Index
-        self.isUrban = isUrban
-    }
-    
-    init(h3Index: String, firstVisited: Date = Date()) {
-        self.h3Index = h3Index
-        self.firstVisited = firstVisited
-        self.lastVisited = firstVisited
+        self.resolution = resolution
+        self.regionID = regionID
+        self.firstVisited = Date()
+        self.lastVisited = Date()
         self.visitCount = 1
     }
     
@@ -42,7 +29,7 @@ class ExploredHex {
         lastVisited = Date()
     }
 }
-    
+
 @Model
 class LocationPoint {
     var latitude: Double

@@ -1,11 +1,3 @@
-//
-//  BackupManager.swift
-//  VibeMap
-//
-//  Created by Jenna Jacquemyns on 08.02.2026.
-//
-
-
 import Foundation
 import SwiftData
 import SwiftUI
@@ -24,39 +16,41 @@ class BackupManager {
         do {
             // 1. Fetch all data
             let hexDescriptor = FetchDescriptor<ExploredHex>()
-            let cityDescriptor = FetchDescriptor<CityExploration>()
+            let regionDescriptor = FetchDescriptor<RegionExploration>()
             
             let hexes = try modelContext.fetch(hexDescriptor)
-            let cities = try modelContext.fetch(cityDescriptor)
+            let regions = try modelContext.fetch(regionDescriptor)
             
             // 2. Convert to DTOs
             let hexDTOs = hexes.map { hex in
                 HexBackupDTO(
                     h3Index: hex.h3Index,
+                    resolution: hex.resolution,
+                    regionID: hex.regionID,
                     visitCount: hex.visitCount,
                     firstVisited: hex.firstVisited,
                     lastVisited: hex.lastVisited
                 )
             }
             
-            let cityDTOs = cities.map { city in
-                CityBackupDTO(
-                    cityName: city.cityName,
-                    country: city.country,
-                    centerLat: city.centerLatitude,
-                    centerLon: city.centerLongitude,
-                    radius: city.radiusInMeters,
-                    totalHexes: city.totalHexesInBoundary,
-                    exploredHexes: city.exploredHexes
+            let regionDTOs = regions.map { region in
+                RegionBackupDTO(
+                    regionID: region.regionID,
+                    name: region.name,
+                    type: region.type,
+                    totalHexes: region.totalHexes,
+                    exploredHexes: region.exploredHexes,
+                    firstVisited: region.firstVisited,
+                    lastVisited: region.lastVisited
                 )
             }
             
             // 3. Encode
             let backup = BackupData(
-                version: 1,
+                version: 2, // Bumped version for new schema
                 timestamp: Date(),
                 hexes: hexDTOs,
-                cities: cityDTOs
+                regions: regionDTOs
             )
             
             let encoder = JSONEncoder()
@@ -82,28 +76,29 @@ class BackupManager {
         
         let backup = try decoder.decode(BackupData.self, from: data)
         
-        // 2. Clear existing data (Optional: You might want to merge instead)
+        // 2. Clear existing data
         try clearDatabase()
         
         // 3. Insert new data
         for hexDTO in backup.hexes {
-            let hex = ExploredHex(h3Index: hexDTO.h3Index, firstVisited: hexDTO.firstVisited)
+            let hex = ExploredHex(h3Index: hexDTO.h3Index, resolution: hexDTO.resolution, regionID: hexDTO.regionID)
+            hex.firstVisited = hexDTO.firstVisited
             hex.lastVisited = hexDTO.lastVisited
             hex.visitCount = hexDTO.visitCount
             modelContext.insert(hex)
         }
         
-        for cityDTO in backup.cities {
-            let city = CityExploration(
-                cityName: cityDTO.cityName,
-                country: cityDTO.country,
-                centerLat: cityDTO.centerLat,
-                centerLon: cityDTO.centerLon,
-                radius: cityDTO.radius
+        for regionDTO in backup.regions {
+            let region = RegionExploration(
+                regionID: regionDTO.regionID,
+                name: regionDTO.name,
+                type: regionDTO.type,
+                totalHexes: regionDTO.totalHexes
             )
-            city.totalHexesInBoundary = cityDTO.totalHexes
-            city.exploredHexes = cityDTO.exploredHexes
-            modelContext.insert(city)
+            region.exploredHexes = regionDTO.exploredHexes
+            region.firstVisited = regionDTO.firstVisited
+            region.lastVisited = regionDTO.lastVisited
+            modelContext.insert(region)
         }
         
         try modelContext.save()
@@ -112,7 +107,7 @@ class BackupManager {
     
     private func clearDatabase() throws {
         try modelContext.delete(model: ExploredHex.self)
-        try modelContext.delete(model: CityExploration.self)
-        try modelContext.delete(model: LocationPoint.self) // Also clear points to be safe
+        try modelContext.delete(model: RegionExploration.self)
+        try modelContext.delete(model: LocationPoint.self)
     }
 }

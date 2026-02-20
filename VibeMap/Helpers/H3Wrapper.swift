@@ -3,71 +3,98 @@
 //  VibeMap
 //
 //  Created by Jenna Jacquemyns on 07.02.2026.
+//  Optimized by Claude on 19.02.2026.
 //
-
 
 import Foundation
 import CoreLocation
-import h3lib // Import the C library
+import h3lib
 
 struct H3Wrapper {
     
-    /// Converts a standard coordinate into an H3 Hexagon String
-    static func getH3Index(from coordinate: CLLocationCoordinate2D, resolution: Int32 = 10) -> String? {
-        // 1. Convert Lat/Lon to Radians (required by H3)
-        let latRad = coordinate.latitude * .pi / 180.0
-        let lonRad = coordinate.longitude * .pi / 180.0
-        var g = LatLng(lat: latRad, lng: lonRad)
-        
-        // 2. Generate the H3 Index (UInt64)
+    // Pre-calculated constants to avoid repeated division in hot paths
+    private static let toRad = Double.pi / 180.0
+    private static let toDeg = 180.0 / Double.pi
+    
+    // MARK: - Core Raw API (Fast Path)
+    // Use these when possible to avoid String conversion overhead.
+    // Only convert to String at the persistence boundary (e.g. SwiftData).
+    
+    /// Converts a coordinate to a raw H3Index (UInt64). Returns nil on failure.
+    /// This is the zero-allocation fast path — prefer this over getH3Index
+    /// when you don't immediately need a String.
+    static func getRawIndex(
+        from coordinate: CLLocationCoordinate2D,
+        resolution: Int32 = 10
+    ) -> H3Index? {
+        var g = LatLng(
+            lat: coordinate.latitude * toRad,
+            lng: coordinate.longitude * toRad
+        )
         var index: H3Index = 0
         let error = latLngToCell(&g, resolution, &index)
-        
+        // Always propagate the H3 error code rather than relying on index == 0,
+        // which is an implementation detail rather than a guaranteed API contract.
         guard error == E_SUCCESS else { return nil }
-        
-        // 3. Convert UInt64 to a readable Hexadecimal String
-        var charBuffer = [CChar](repeating: 0, count: 17)
-        h3ToString(index, &charBuffer, 17)
-        
-        return String(cString: charBuffer)
+        return index
     }
     
-    /// Returns the points needed to draw the hexagon on a map
-    static func getVertices(for h3String: String) -> [CLLocationCoordinate2D] {
-        var index: H3Index = 0
-        stringToH3(h3String, &index)
-        
+    /// Converts a raw H3Index to its parent at the given resolution. Returns nil on failure.
+    static func cellToParent(index: H3Index, parentRes: Int32) -> H3Index? {
+        var parentIndex: H3Index = 0
+        let error = h3lib.cellToParent(index, parentRes, &parentIndex)
+        guard error == 0 else { return nil }
+        return parentIndex
+    }
+    
+    /// Returns the boundary vertices for a raw H3Index.
+    static func getVertices(for index: H3Index) -> [CLLocationCoordinate2D] {
         var boundary = CellBoundary()
         cellToBoundary(index, &boundary)
         
-        var coords: [CLLocationCoordinate2D] = []
+        let count = Int(boundary.numVerts)
+        guard count > 0 else { return [] }
         
-        // Accessing C-arrays in Swift requires 'withUnsafePointer'
-        // because they are imported as fixed-size tuples.
-        for i in 0..<Int(boundary.numVerts) {
-            let vertex = withUnsafePointer(to: boundary.verts) { ptr in
-                ptr.withMemoryRebound(to: LatLng.self, capacity: Int(boundary.numVerts)) { latLngs in
-                    latLngs[i]
+        // Allocate with exact capacity (no resizing) and bind memory once outside the loop.
+        return Array(unsafeUninitializedCapacity: count) { buffer, initializedCount in
+            withUnsafeBytes(of: boundary.verts) { rawPtr in
+                let latLngs = rawPtr.bindMemory(to: LatLng.self)
+                for i in 0..<count {
+                    let vertex = latLngs[i]
+                    buffer[i] = CLLocationCoordinate2D(
+                        latitude: vertex.lat * toDeg,
+                        longitude: vertex.lng * toDeg
+                    )
                 }
             }
-            coords.append(CLLocationCoordinate2D(
-                latitude: vertex.lat * 180.0 / .pi,
-                longitude: vertex.lng * 180.0 / .pi
-            ))
+            initializedCount = count
         }
-        return coords
     }
     
-    /// Converts a child hex (e.g. Res 10) to a coarser parent hex (e.g. Res 9)
+    // MARK: - String API (Persistence / Display boundary)
+    // Use these at the SwiftData / UI layer where Strings are required.
+    
+    /// Converts a coordinate into an H3 hex string.
+    static func getH3Index(
+        from coordinate: CLLocationCoordinate2D,
+        resolution: Int32 = 10
+    ) -> String? {
+        guard let index = getRawIndex(from: coordinate, resolution: resolution) else {
+            return nil
+        }
+        return String(index, radix: 16)
+    }
+    
+    /// Returns boundary vertices for a hex string.
+    static func getVertices(for h3String: String) -> [CLLocationCoordinate2D] {
+        guard let index = UInt64(h3String, radix: 16) else { return [] }
+        return getVertices(for: index)
+    }
+    
+    /// Converts a hex string to its parent hex string at the given resolution.
     static func cellToParent(h3Index: String, parentRes: Int32) -> String? {
         guard let index = UInt64(h3Index, radix: 16) else { return nil }
-        var parentIndex: H3Index = 0
-        let error = H3.cellToParent(index, parentRes, &parentIndex)
-        
-        if error == 0 {
-            return String(parentIndex, radix: 16)
-        }
-        return nil
+        guard let parent = cellToParent(index: index, parentRes: parentRes) else { return nil }
+        return String(parent, radix: 16)
     }
 }
-    

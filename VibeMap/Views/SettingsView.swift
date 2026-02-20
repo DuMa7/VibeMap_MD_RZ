@@ -1,11 +1,3 @@
-//
-//  SettingsView.swift
-//  VibeMap
-//
-//  Created by Jenna Jacquemyns on 08.02.2026.
-//
-
-
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
@@ -47,8 +39,9 @@ struct SettingsView: View {
                 Section("Danger Zone") {
                     Button(role: .destructive) {
                         do {
+                            // Updated to use the new Phase 2 models
                             try modelContext.delete(model: ExploredHex.self)
-                            try modelContext.delete(model: CityExploration.self)
+                            try modelContext.delete(model: RegionExploration.self)
                             try modelContext.delete(model: LocationPoint.self)
                             alertMessage = "All data erased."
                             showAlert = true
@@ -89,7 +82,6 @@ struct SettingsView: View {
                 case .success(let urls):
                     guard let url = urls.first else { return }
                     
-                    // Security: Access the file
                     guard url.startAccessingSecurityScopedResource() else { return }
                     defer { url.stopAccessingSecurityScopedResource() }
                     

@@ -1,9 +1,9 @@
+import UIKit
 import H3
 import Foundation
 import CoreLocation
 import Observation
 import SwiftData
-import MapKit
 import CoreMotion
 
 @Observable
@@ -15,24 +15,21 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     var authorizationStatus: CLAuthorizationStatus = .notDetermined
     var modelContext: ModelContext?
     
-    private var currentCity: String?
-    private var currentCountry: String?
-    
-    // PHASE 1: Improved batch system
+    // PHASE 3: Improved batch system using Dictionary to hold DB context
     private var lastSavedHex: String?
-    private var pendingHexes: Set<String> = []
+    private var pendingHexes: [String: (resolution: Int, regionID: String)] = [:]
     private var pendingLocationPoints: [(latitude: Double, longitude: Double, h3Index: String)] = []
     
     // Track the last time we flushed pending data
     private var lastFlushTime: Date? = nil
     
-    // NEW: Track app state
+    // Track app state
     private var isInForeground = true
     
-    // NEW: Background task identifier
+    // Background task identifier
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     
-    // PHASE 2: Motion detection
+    // Motion detection
     private var currentProfile: TrackingProfile = .unknown
     
     enum TrackingProfile {
@@ -56,9 +53,8 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.delegate = self
         manager.allowsBackgroundLocationUpdates = true
         manager.pausesLocationUpdatesAutomatically = false
-        manager.showsBackgroundLocationIndicator = true // Shows blue bar in iOS to indicate background tracking
+        manager.showsBackgroundLocationIndicator = true
         
-        // Start with unknown profile
         applyProfile(.unknown)
     }
     
@@ -67,7 +63,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
     
     func startTracking() {
-        // Start motion detection if available
         if CMMotionActivityManager.isActivityAvailable() {
             startMotionDetection()
         } else {
@@ -82,7 +77,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.stopMonitoringVisits()
         activityManager.stopActivityUpdates()
         
-        // Flush any pending data before stopping
         flushPendingData()
     }
     
@@ -91,7 +85,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     private func startMotionDetection() {
         activityManager.startActivityUpdates(to: .main) { [weak self] activity in
             guard let self = self, let activity = activity else { return }
-            
             self.handleActivityChange(activity)
         }
     }
@@ -109,7 +102,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             newProfile = .unknown
         }
         
-        // Only reconfigure if profile actually changed
         if newProfile != currentProfile {
             print("🔄 Activity changed: \(currentProfile.description) → \(newProfile.description)")
             currentProfile = newProfile
@@ -118,7 +110,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
     
     private func applyProfile(_ profile: TrackingProfile) {
-        // Stop all tracking first
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
         
@@ -127,44 +118,38 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             manager.desiredAccuracy = kCLLocationAccuracyBest
             manager.distanceFilter = 20
             manager.startUpdatingLocation()
-            print("📍 Tracking mode: WALKING (20m filter, best accuracy)")
+            print("📍 Tracking mode: WALKING")
             
         case .driving:
             manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
             manager.distanceFilter = 50
             manager.startUpdatingLocation()
-            print("📍 Tracking mode: DRIVING (50m filter, medium accuracy)")
+            print("📍 Tracking mode: DRIVING")
             
         case .stationary:
-            // In background, we still want SOME updates
-            // Use significant changes + visit monitoring
             manager.startMonitoringSignificantLocationChanges()
-            manager.startMonitoringVisits() // This was missing!
-            print("📍 Tracking mode: STATIONARY (significant changes + visits)")
+            manager.startMonitoringVisits()
+            print("📍 Tracking mode: STATIONARY")
             
         case .unknown:
             manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
             manager.distanceFilter = 30
             manager.startUpdatingLocation()
-            print("📍 Tracking mode: UNKNOWN (30m filter, medium accuracy)")
+            print("📍 Tracking mode: UNKNOWN")
         }
     }
     
-    // MARK: - NEW: Smart Flushing System
+    // MARK: - Smart Flushing System
     
     func flushPendingData() {
         guard let context = modelContext else { return }
         guard !pendingHexes.isEmpty || !pendingLocationPoints.isEmpty else { return }
-        
-        let hexCount = pendingHexes.count
-        let pointCount = pendingLocationPoints.count
-        
-        print("💾 Flushing \(hexCount) hexes and \(pointCount) location points to database...")
-        
-        // Begin background task to ensure completion
+            
+        print("💾 Flushing \(pendingHexes.count) hexes and \(pendingLocationPoints.count) points to SwiftData...")
+            
         beginBackgroundTask()
-        
-        // Save all pending location points
+            
+        // Save the raw location points (if you still want breadcrumbs)
         for point in pendingLocationPoints {
             let locationPoint = LocationPoint(
                 latitude: point.latitude,
@@ -173,42 +158,73 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             )
             context.insert(locationPoint)
         }
-        
-        // Save all pending hexes
-        for hexIndex in pendingHexes {
-              let descriptor = FetchDescriptor<ExploredHex>(
-                  predicate: #Predicate { $0.h3Index == hexIndex }
-              )
-              
-              if let existingHex = try? context.fetch(descriptor).first {
-                  existingHex.recordVisit()
-              } else {
-                  let isBigCity = PopulationManager.shared.isBigCity(self.currentCity ?? "", threshold: 10000)
-                  let newHex = ExploredHex(h3Index: hexIndex, isUrban: isBigCity)
-                  
-                  // Simplified - no geographic attribution for now
-                  newHex.communeName = self.currentCity
-                  newHex.countryName = self.currentCountry
-                  
-                  context.insert(newHex)
-              }
-          }
-        
-        // Save to database
+            
+        // Process the Hexagons
+        for (hexIndex, data) in pendingHexes {
+            let descriptor = FetchDescriptor<ExploredHex>(
+                predicate: #Predicate { $0.h3Index == hexIndex }
+            )
+                
+            if let _ = try? context.fetch(descriptor).first {
+                // RULE APPLIED: We have already visited this hex.
+                // Discard the visit and do nothing to save CPU and database writes.
+                continue
+            } else {
+                // 1. Save the brand new hex to SwiftData
+                let newHex = ExploredHex(h3Index: hexIndex, resolution: data.resolution, regionID: data.regionID)
+                    context.insert(newHex)
+                    
+                // 2. INCREMENT REGION PROGRESS
+                let regionIdToFind = data.regionID
+                let regionDescriptor = FetchDescriptor<RegionExploration>(
+                    predicate: #Predicate { $0.regionID == regionIdToFind }
+                )
+                    
+                if let region = try? context.fetch(regionDescriptor).first {
+                    // The region tracker already exists, just add the new hex!
+                    region.addExploredHex(hexIndex)
+                } else {
+                    // 3. FIRST TIME DISCOVERY
+                    print("✨ Discovered a brand new region with ID: \(data.regionID)")
+                                        
+                    // Look up the real name and Canton ID from our GeoJSON metadata
+                    let metadata = RegionMetadataManager.shared.municipalities[data.regionID]
+                    let regionName = metadata?.name ?? "Unknown Region"
+                                        
+                    // Ask SQLite exactly how many hexes make up this municipality
+                    let totalHexes = OfflineDatabase.shared.getTotalHexes(for: data.regionID)
+                                        
+                    // Create the progress tracker!
+                    let newRegion = RegionExploration(
+                        regionID: data.regionID,
+                        name: regionName,
+                        type: "Municipality",
+                        totalHexes: totalHexes
+                    )
+                                        
+                    newRegion.addExploredHex(hexIndex)
+                    context.insert(newRegion)
+                                        
+                    // Bonus: You can now easily expand this right here to create
+                    // a tracker for metadata?.cantonID to power your Canton zoom view!
+                }
+            }
+        }
+            
         do {
-             try context.save()
-             print("✅ Successfully flushed data to database")
-             
-             // Clear pending data
-             pendingHexes.removeAll()
-             pendingLocationPoints.removeAll()
-             lastFlushTime = Date()
-         } catch {
-             print("❌ Error flushing data: \(error.localizedDescription)")
-         }
-     }
+            try context.save()
+            print("✅ Successfully flushed data to database")
+                 
+            pendingHexes.removeAll()
+            pendingLocationPoints.removeAll()
+            lastFlushTime = Date()
+        } catch {
+            print("❌ Error flushing data: \(error.localizedDescription)")
+        }
+        
+        endBackgroundTask()
+    }
     
-    // NEW: Background task management
     private func beginBackgroundTask() {
         backgroundTask = UIApplication.shared.beginBackgroundTask { [weak self] in
             self?.endBackgroundTask()
@@ -223,23 +239,16 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
     
     func applicationDidBecomeActive() {
-        print("📱 App became active")
         isInForeground = true
         flushPendingData()
-        
-        // Re-enable motion detection
         if CMMotionActivityManager.isActivityAvailable() {
             startMotionDetection()
         }
     }
     
     func applicationDidEnterBackground() {
-        print("📱 App entering background")
         isInForeground = false
         flushPendingData()
-        
-        // Motion activity doesn't work well in background
-        // Switch to a conservative profile
         applyProfile(.unknown)
     }
     
@@ -247,16 +256,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         authorizationStatus = manager.authorizationStatus
-        
         switch authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
-            print("✅ Location permission granted")
             startTracking()
-        case .denied, .restricted:
-            print("❌ Location permission denied")
-        case .notDetermined:
-            print("⏳ Location permission not determined")
-        @unknown default:
+        default:
             break
         }
     }
@@ -264,18 +267,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         
-        // Filter out stale locations
         let locationAge = abs(location.timestamp.timeIntervalSinceNow)
-        guard locationAge < 10 else {
-            print("⏭️ Skipping stale location (age: \(Int(locationAge))s)")
-            return
-        }
-        
-        // Filter out inaccurate locations
-        guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else {
-            print("⏭️ Skipping inaccurate location (accuracy: \(location.horizontalAccuracy)m)")
-            return
-        }
+        guard locationAge < 10 else { return }
+        guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else { return }
         
         userLocation = location.coordinate
         GenevaDetector.shared.detect(coordinate: location.coordinate)
@@ -283,48 +277,41 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         let latRads = location.coordinate.latitude * .pi / 180.0
         let lonRads = location.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
-        var h3Index: H3Index = 0
-        let error = latLngToCell(&coord, Int32(10), &h3Index)
         
-        if error == 0 {
-            let hexString = String(h3Index, radix: 16)
+        // 1. Generate both Res 10 and Res 9 indices natively in C
+        var h3Index10: H3Index = 0
+        var h3Index9: H3Index = 0
+        latLngToCell(&coord, Int32(10), &h3Index10)
+        latLngToCell(&coord, Int32(9), &h3Index9)
+        
+        let hex10 = String(h3Index10, radix: 16)
+        let hex9 = String(h3Index9, radix: 16)
+        
+        // 2. Query the SQLite database natively (NO NETWORK!)
+        if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
+            let activeHex = regionData.matchedHex
             
-            // HEX GEOFENCING: Only process if we entered a new hex
-            if hexString != lastSavedHex {
-                print("📍 New hex entered: \(hexString) [\(currentProfile.description)] [Foreground: \(isInForeground)]")
+            // 3. HEX GEOFENCING
+            if activeHex != lastSavedHex {
+                print("📍 New hex entered: \(activeHex) (Res \(regionData.resolution))")
                 
-                lastSavedHex = hexString
+                lastSavedHex = activeHex
                 
-                // Add to pending batch
-                pendingHexes.insert(hexString)
+                // Add to Dictionary batch with database info
+                pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
+                
                 pendingLocationPoints.append((
                     latitude: location.coordinate.latitude,
                     longitude: location.coordinate.longitude,
-                    h3Index: hexString
+                    h3Index: activeHex
                 ))
                 
-                // Trigger city detection
-                let clLocation = CLLocation(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
-                detectCity(from: clLocation, h3Index: hexString)
-                
-                // NEW: IMMEDIATE FLUSH STRATEGY
                 if isInForeground {
-                    // In foreground: flush after every 5 new hexes OR if batch is getting old
-                    if pendingHexes.count >= 5 {
-                        print("🔄 Auto-flushing (5 hexes reached in foreground)")
-                        flushPendingData()
-                    }
+                    if pendingHexes.count >= 1 { flushPendingData() } //change this later to 5 again otherwise will constantly refresh
                 } else {
-                    // In background: flush immediately to ensure data is saved
-                    // This is critical because background execution time is limited
-                    print("🔄 Immediate flush (background mode)")
                     flushPendingData()
                 }
-                
-                print("📊 Pending: \(pendingHexes.count) hexes")
             }
-        } else {
-            print("⚠️ H3 Error: Could not generate index. Error code: \(error)")
         }
     }
     
@@ -333,33 +320,32 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
     
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-        print("📍 Visit detected: \(visit.coordinate.latitude), \(visit.coordinate.longitude)")
-        
-        // Process visit immediately
         beginBackgroundTask()
         
         userLocation = visit.coordinate
-        
         let latRads = visit.coordinate.latitude * .pi / 180.0
         let lonRads = visit.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
-        var h3Index: H3Index = 0
-        let error = latLngToCell(&coord, Int32(10), &h3Index) // Changed to resolution 10 to match
         
-        if error == 0 {
-            let hexString = String(h3Index, radix: 16)
+        var h3Index10: H3Index = 0
+        var h3Index9: H3Index = 0
+        latLngToCell(&coord, Int32(10), &h3Index10)
+        latLngToCell(&coord, Int32(9), &h3Index9)
+        
+        let hex10 = String(h3Index10, radix: 16)
+        let hex9 = String(h3Index9, radix: 16)
+        
+        if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
+            let activeHex = regionData.matchedHex
             
-            if hexString != lastSavedHex {
-                lastSavedHex = hexString
-                pendingHexes.insert(hexString)
+            if activeHex != lastSavedHex {
+                lastSavedHex = activeHex
+                pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
                 pendingLocationPoints.append((
                     latitude: visit.coordinate.latitude,
                     longitude: visit.coordinate.longitude,
-                    h3Index: hexString
+                    h3Index: activeHex
                 ))
-                
-                // Flush visits immediately
-                print("🔄 Flushing visit immediately")
                 flushPendingData()
             }
         }
@@ -367,114 +353,8 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         endBackgroundTask()
     }
     
-    // MARK: - City Detection (Modern MapKit)
-    
-    private func detectCity(from location: CLLocation, h3Index: String) {
-        guard let context = modelContext else { return }
-        
-        Task {
-            do {
-                let searchRequest = MKLocalSearch.Request()
-                searchRequest.naturalLanguageQuery = "city"
-                searchRequest.region = MKCoordinateRegion(
-                    center: location.coordinate,
-                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                )
-                searchRequest.resultTypes = .address
-                
-                let search = MKLocalSearch(request: searchRequest)
-                let response = try await search.start()
-                
-                guard let firstItem = response.mapItems.first,
-                      let city = firstItem.placemark.locality ?? firstItem.placemark.subLocality,
-                      let country = firstItem.placemark.country else {
-                    return
-                }
-                
-                await MainActor.run {
-                    if self.currentCity != city {
-                        self.currentCity = city
-                        self.currentCountry = country
-                        print("🏙️ Entered: \(city), \(country)")
-                    }
-                    
-                    self.updateCityExploration(city: city, country: country, location: location, h3Index: h3Index, context: context)
-                }
-                
-            } catch {
-                print("⚠️ Geocoding error: \(error.localizedDescription)")
-            }
-        }
-    }
-    
-    private func updateCityExploration(city: String, country: String, location: CLLocation, h3Index: String, context: ModelContext) {
-        let descriptor = FetchDescriptor<CityExploration>(
-            predicate: #Predicate { $0.cityName == city }
-        )
-        
-        let cityExploration: CityExploration
-        if let existing = try? context.fetch(descriptor).first {
-            cityExploration = existing
-        } else {
-            cityExploration = CityExploration(
-                cityName: city,
-                country: country,
-                centerLat: location.coordinate.latitude,
-                centerLon: location.coordinate.longitude,
-                radius: 10000
-            )
-            context.insert(cityExploration)
-            
-            Task {
-                await self.calculateTotalHexes(for: cityExploration, context: context)
-            }
-            
-            print("✨ New city discovered: \(city)!")
-        }
-        
-        cityExploration.addExploredHex(h3Index)
-        try? context.save()
-    }
-    
-    private func calculateTotalHexes(for city: CityExploration, context: ModelContext) async {
-        let center = CLLocationCoordinate2D(latitude: city.centerLatitude, longitude: city.centerLongitude)
-        let radiusInDegrees = city.radiusInMeters / 111000.0
-        
-        var hexSet = Set<String>()
-        
-        let steps = 50
-        for latStep in 0..<steps {
-            for lonStep in 0..<steps {
-                let lat = center.latitude - radiusInDegrees + (2 * radiusInDegrees * Double(latStep) / Double(steps))
-                let lon = center.longitude - radiusInDegrees + (2 * radiusInDegrees * Double(lonStep) / Double(steps))
-                
-                let point = CLLocation(latitude: lat, longitude: lon)
-                let distance = point.distance(from: CLLocation(latitude: center.latitude, longitude: center.longitude))
-                
-                if distance <= city.radiusInMeters {
-                    let latRads = lat * .pi / 180.0
-                    let lonRads = lon * .pi / 180.0
-                    var coord = LatLng(lat: latRads, lng: lonRads)
-                    var h3Index: H3Index = 0
-                    let error = latLngToCell(&coord, Int32(10), &h3Index) // Changed to 10 to match
-                    
-                    if error == 0 {
-                        hexSet.insert(String(h3Index, radix: 16))
-                    }
-                }
-            }
-        }
-        
-        await MainActor.run {
-            city.totalHexesInBoundary = hexSet.count
-            try? context.save()
-            print("🔷 \(city.cityName): \(hexSet.count) total hexes calculated")
-        }
-    }
-    
     deinit {
         flushPendingData()
         endBackgroundTask()
     }
 }
-
