@@ -18,7 +18,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     // PHASE 3: Improved batch system using Dictionary to hold DB context
     private var lastSavedHex: String?
     private var pendingHexes: [String: (resolution: Int, regionID: String)] = [:]
-    private var pendingLocationPoints: [(latitude: Double, longitude: Double, h3Index: String)] = []
     
     // Track the last time we flushed pending data
     private var lastFlushTime: Date? = nil
@@ -143,31 +142,26 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     
     func flushPendingData() {
         guard let context = modelContext else { return }
-        guard !pendingHexes.isEmpty || !pendingLocationPoints.isEmpty else { return }
+        guard !pendingHexes.isEmpty else { return }
             
-        print("💾 Flushing \(pendingHexes.count) hexes and \(pendingLocationPoints.count) points to SwiftData...")
+        print("💾 Flushing \(pendingHexes.count) hexes to SwiftData...")
             
         beginBackgroundTask()
             
-        // Save the raw location points (if you still want breadcrumbs)
-        for point in pendingLocationPoints {
-            let locationPoint = LocationPoint(
-                latitude: point.latitude,
-                longitude: point.longitude,
-                h3Index: point.h3Index
-            )
-            context.insert(locationPoint)
-        }
-            
         // Process the Hexagons
+        let pendingKeys = Array(pendingHexes.keys)
+        let batchDescriptor = FetchDescriptor<ExploredHex>(
+            predicate: #Predicate<ExploredHex> { hex in
+                pendingKeys.contains(hex.h3Index)
+            }
+        )
+        let alreadyExplored = Set(
+            ((try? context.fetch(batchDescriptor)) ?? []).map { $0.h3Index }
+        )
+
         for (hexIndex, data) in pendingHexes {
-            let descriptor = FetchDescriptor<ExploredHex>(
-                predicate: #Predicate { $0.h3Index == hexIndex }
-            )
-                
-            if let _ = try? context.fetch(descriptor).first {
-                // RULE APPLIED: We have already visited this hex.
-                // Discard the visit and do nothing to save CPU and database writes.
+            // O(1) set lookup instead of a database round trip
+            if alreadyExplored.contains(hexIndex) {
                 continue
             } else {
                 // 1. Save the brand new hex to SwiftData
@@ -216,7 +210,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             print("✅ Successfully flushed data to database")
                  
             pendingHexes.removeAll()
-            pendingLocationPoints.removeAll()
             lastFlushTime = Date()
         } catch {
             print("❌ Error flushing data: \(error.localizedDescription)")
@@ -272,7 +265,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else { return }
         
         userLocation = location.coordinate
-        GenevaDetector.shared.detect(coordinate: location.coordinate)
         
         let latRads = location.coordinate.latitude * .pi / 180.0
         let lonRads = location.coordinate.longitude * .pi / 180.0
@@ -299,12 +291,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                 
                 // Add to Dictionary batch with database info
                 pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
-                
-                pendingLocationPoints.append((
-                    latitude: location.coordinate.latitude,
-                    longitude: location.coordinate.longitude,
-                    h3Index: activeHex
-                ))
                 
                 if isInForeground {
                     if pendingHexes.count >= 1 { flushPendingData() } //change this later to 5 again otherwise will constantly refresh
@@ -341,11 +327,6 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             if activeHex != lastSavedHex {
                 lastSavedHex = activeHex
                 pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
-                pendingLocationPoints.append((
-                    latitude: visit.coordinate.latitude,
-                    longitude: visit.coordinate.longitude,
-                    h3Index: activeHex
-                ))
                 flushPendingData()
             }
         }

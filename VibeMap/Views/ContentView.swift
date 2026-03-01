@@ -5,30 +5,85 @@ import MapKit
 import H3
 
 struct ContentView: View {
+    
+    // MARK: - Environment & Queries
+    
     @Environment(\.modelContext) private var modelContext
     @Environment(LocationManager.self) var locationManager
     
+    /// All explored hexes — used for hex count, area calculation, and map rendering
     @Query private var exploredHexes: [ExploredHex]
-    @Query private var locationPoints: [LocationPoint]
+    
+    /// All visited regions sorted by most recent visit — drives municipality list and canton stats
     @Query(sort: \RegionExploration.lastVisited, order: .reverse) private var regions: [RegionExploration]
     
+    // MARK: - Map State
+    
+    /// Loads canton and municipality GeoJSON polygons for map overlay rendering
     @State private var layerManager = MapLayerManager()
     
-    // Map State
-    @State private var currentSpan: Double = 0.05
+    /// Current map camera position — updated programmatically on first location fix and recenter
     @State private var position: MapCameraPosition = .automatic
+    
+    /// Latitude delta of the visible map region — drives zoom-level logic in the HUD pill
+    @State private var currentSpan: Double = 0.05
+    
+    /// Prevents the map from re-centering on the user after they have manually panned
     @State private var hasInitiallyPositioned = false
+    
+    /// Center coordinate of the visible map region — updated on pan end and on location update
     @State private var centerCoordinate: CLLocationCoordinate2D? = nil
     
-    // Dynamic Center State
+    // MARK: - Crosshair-Based Center State
+    // Single source of truth for the HUD pill and Location Details overlay.
+    // Updated both when the map stops panning AND when the user's location changes while walking.
+    
+    /// Region ID of the municipality at the map crosshair — used to fetch exploration % for the HUD
     @State private var centeredRegionID: String? = nil
+    
+    /// Display name of the municipality at the map crosshair
     @State private var centeredMunicipalityName: String = "Locating..."
+    
+    /// Total hexes in the municipality at the map crosshair — used for the Location Details progress bar
+    @State private var centeredMuniTotalHexes: Int = 0
+    
+    /// Display name of the canton at the map crosshair
     @State private var centeredCantonName: String = "Locating..."
     
-    // UI State
+    // MARK: - UI State
+    
+    /// Controls visibility of the Explorer Profile stats overlay
     @State private var showStats = false
+    
+    /// Controls visibility of the Settings sheet
     @State private var showSettings = false
+    
+    /// Controls visibility of the Location Details overlay (tapping the HUD pill)
+    @State private var showRegionDetails = false
+    
+    /// Controls the splash screen — dismissed after 2.5s on first launch
     @State private var isLoading = true
+    
+    // MARK: - Achievement State
+    
+    /// Comma-separated titles of all previously unlocked achievements — persisted across launches via UserDefaults
+    @AppStorage("unlockedAchievementTitles") private var unlockedAchievementTitles: String = ""
+    
+    /// The achievement currently being displayed in the banner (always 0 or 1 item)
+    @State private var newlyUnlocked: [Achievement] = []
+    
+    /// Whether the achievement banner is currently visible
+    @State private var showAchievementBanner = false
+    
+    /// Queue of achievements waiting to be shown — displayed one at a time after each banner dismisses
+    @State private var bannerQueue: [Achievement] = []
+    
+    // MARK: - Live Location
+    
+    /// Detects the user's current municipality in real time — kept for future use but not driving the pill directly
+    private let liveDetector = LiveLocationDetector.shared
+    
+    // MARK: - Body
     
     var body: some View {
         ZStack(alignment: .top) {
@@ -40,10 +95,20 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.5), value: isLoading)
         .onAppear {
+            // Inject the SwiftData context into LocationManager so it can persist hexes
             locationManager.modelContext = modelContext
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { isLoading = false }
+            
+            // Dismiss splash screen after 2.5s then seed initial achievement state
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                isLoading = false
+                repairRegionTotals()
+                checkAchievements()
+            }
         }
-        .onChange(of: locationManager.userLocation) { oldValue, newValue in
+        // Center the map on the user's first location fix only.
+        // Also update the crosshair state on every location update so the pill
+        // tracks the user's position in real time while walking.
+        .onChange(of: locationManager.userLocation) { _, newValue in
             if let newValue, !hasInitiallyPositioned {
                 position = .region(MKCoordinateRegion(
                     center: newValue,
@@ -51,14 +116,35 @@ struct ContentView: View {
                 ))
                 hasInitiallyPositioned = true
             }
+            if let newValue {
+                liveDetector.detect(coordinate: newValue, cantons: layerManager.cantons)
+                updateCenteredRegion(coordinate: newValue)
+            }
         }
-        .onChange(of: centerCoordinate) { oldValue, newValue in
+        // Re-check achievements whenever the user enters a new hex
+        .onChange(of: exploredHexes.count) { _, _ in
+            checkAchievements()
+        }
+        // Update crosshair state when the map stops panning
+        .onChange(of: centerCoordinate) { _, newValue in
             if let newValue {
                 updateCenteredRegion(coordinate: newValue)
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
     }
+    
+    // MARK: - Computed Achievement State
+    
+    /// Single source of truth for currently unlocked achievements — used by both the banner and stats overlay
+    private var currentUnlockedAchievements: [Achievement] {
+        AchievementLibrary.getUnlocked(
+            hexCount: exploredHexes.count,
+            cityCount: regions.count
+        )
+    }
+    
+    // MARK: - Map Content
     
     private var mapContent: some View {
         ZStack(alignment: .top) {
@@ -73,8 +159,9 @@ struct ContentView: View {
             )
             .ignoresSafeArea()
             
-            // Dynamic Top HUD
+            // MARK: Top HUD
             HStack {
+                // Settings button
                 Button(action: { showSettings.toggle() }) {
                     Image(systemName: "gearshape.fill")
                         .foregroundStyle(.primary)
@@ -86,14 +173,19 @@ struct ContentView: View {
                 
                 Spacer()
                 
-                // Dynamic Central Pill
-                Button(action: { }) {
+                // Central pill — shows location name and exploration % at the active zoom level.
+                // Always reflects the map crosshair: updates on pan and on walking location changes.
+                // Tapping opens the Location Details overlay.
+                Button(action: {
+                    let generator = UIImpactFeedbackGenerator(style: .light)
+                    generator.impactOccurred()
+                    withAnimation { showRegionDetails = true }
+                }) {
                     HStack(spacing: 12) {
                         Text(currentZoomLabel)
                             .font(.subheadline)
                             .bold()
                             .foregroundStyle(.primary)
-                            // NEW: Smooth transition when the text changes due to zooming
                             .contentTransition(.interpolate)
                         
                         Divider().frame(height: 20)
@@ -109,14 +201,14 @@ struct ContentView: View {
                     .background(.ultraThinMaterial)
                     .clipShape(Capsule())
                     .shadow(radius: 5)
-                    // NEW: Animates the pill resizing slightly when names change
                     .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentZoomLabel)
                 }
                 
                 Spacer()
                 
-                Button(action: { showStats.toggle() }) {
-                    Image(systemName: "chart.bar.fill")
+                // Explorer Profile / Stats button
+                Button(action: { withAnimation { showStats = true } }) {
+                    Image(systemName: "trophy.fill")
                         .foregroundStyle(.primary)
                         .padding(10)
                         .background(.ultraThinMaterial)
@@ -127,7 +219,7 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.top, 10)
             
-            // Recenter Button
+            // MARK: Recenter Button
             VStack {
                 Spacer()
                 HStack {
@@ -157,76 +249,427 @@ struct ContentView: View {
                     Spacer()
                 }
             }
+            
+            // MARK: Achievement Banner & Confetti
+            // Banner slides down from top when a new achievement is unlocked.
+            // Multiple unlocks are queued and shown one after another.
+            if showAchievementBanner, let achievement = newlyUnlocked.first {
+                AchievementBannerView(achievement: achievement) {
+                    showNextBanner()
+                }
+                .zIndex(1)
+                
+                ConfettiView()
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false) // Prevents confetti particles from blocking map taps
+                    .zIndex(2)
+            }
+            
+            // MARK: Overlays
+            if showRegionDetails {
+                regionDetailsOverlay
+            }
+            
+            if showStats {
+                statsOverlay
+            }
         }
     }
     
-    // MARK: - Dynamic Zoom & Center Logic
+    // MARK: - HUD Pill Logic
     
-    // NEW: Helper function to strip out secondary names (e.g. "Biel/Bienne" -> "Biel")
+    /// Strips secondary names from bilingual Swiss place names (e.g. "Biel/Bienne" → "Biel")
     private func getPrimaryName(from fullName: String) -> String {
         let separators = CharacterSet(charactersIn: "/,(")
         let parts = fullName.components(separatedBy: separators)
         return parts.first?.trimmingCharacters(in: .whitespaces) ?? fullName
     }
     
-    private func updateCenteredRegion(coordinate: CLLocationCoordinate2D) {
-        let latRads = coordinate.latitude * .pi / 180.0
-        let lonRads = coordinate.longitude * .pi / 180.0
-        var coord = LatLng(lat: latRads, lng: lonRads)
-        
-        var h3Index10: H3Index = 0
-        var h3Index9: H3Index = 0
-        latLngToCell(&coord, Int32(10), &h3Index10)
-        latLngToCell(&coord, Int32(9), &h3Index9)
-        
-        let hex10 = String(h3Index10, radix: 16)
-        let hex9 = String(h3Index9, radix: 16)
-        
-        if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
-            centeredRegionID = regionData.regionID
-            
-            if let metadata = RegionMetadataManager.shared.municipalities[regionData.regionID] {
-                // Apply the single-name filter to the Municipality
-                centeredMunicipalityName = getPrimaryName(from: metadata.name)
-                
-                if let canton = layerManager.cantons.first(where: { $0.id == metadata.cantonID }) {
-                    // Apply the single-name filter to the Canton
-                    centeredCantonName = getPrimaryName(from: canton.name)
-                } else {
-                    centeredCantonName = "Canton \(metadata.cantonID)"
-                }
-            }
-        } else {
-            centeredRegionID = nil
-            centeredMunicipalityName = "Unknown Area"
-            centeredCantonName = "Unknown Canton"
-        }
-    }
-    
+    /// Location name shown in the left side of the HUD pill.
+    /// Adapts to zoom level: World → Switzerland → Canton → Municipality.
+    /// Always reflects the map crosshair — not the user's GPS position.
     private var currentZoomLabel: String {
         if currentSpan >= 10.0 { return "World" }
-        if currentSpan >= 1.8 { return "Switzerland" }
+        if currentSpan >= 1.8  { return "Switzerland" }
         if currentSpan >= 0.18 { return centeredCantonName }
         return centeredMunicipalityName
     }
     
+    /// Exploration stat shown in the right side of the HUD pill.
+    /// Adapts to zoom level: country count → town count → municipality count → hex % explored.
     private var currentZoomPercentage: String {
-        if currentSpan >= 10.0 {
-            return "1 Country"
-        }
-        if currentSpan >= 2.0 {
-            return "\(regions.count) Towns"
-        }
-        if currentSpan >= 0.2 {
-            let cantonID = layerManager.cantons.first(where: { getPrimaryName(from: $0.name) == centeredCantonName })?.id
-            let visitedInCanton = regions.filter { RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID == cantonID }.count
-            return "\(visitedInCanton) Munis"
+        if currentSpan >= 10.0 { return "1 Country" }
+        if currentSpan >= 1.8  { return "\(regions.count) Towns" }
+        
+        if currentSpan >= 0.18 {
+            // Count municipalities visited in the currently visible canton
+            let cantonID = layerManager.cantons.first(where: {
+                getPrimaryName(from: $0.name) == centeredCantonName
+            })?.id
+            let visitedInCanton = regions.filter {
+                RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID == cantonID
+            }.count
+            return "\(visitedInCanton) Towns"
         }
         
+        // Street level: show % of the active municipality explored
         guard let regionID = centeredRegionID,
               let region = regions.first(where: { $0.regionID == regionID }) else {
             return "0%"
         }
         return "\(String(format: "%.1f", region.explorationPercentage))%"
+    }
+    
+    // MARK: - Crosshair Region Update
+    
+    /// Updates the centered region state for both the HUD pill and Location Details overlay.
+    /// Called on every location update (walking) and every map pan end (browsing).
+    /// Runs H3 conversion and SQLite lookup off the main thread to avoid UI stutters.
+    private func updateCenteredRegion(coordinate: CLLocationCoordinate2D) {
+        Task {
+            // H3 index generation — off main thread to avoid blocking map gestures
+            let (hex10, hex9) = await Task.detached(priority: .userInitiated) {
+                let latRads = coordinate.latitude * .pi / 180.0
+                let lonRads = coordinate.longitude * .pi / 180.0
+                var coord = LatLng(lat: latRads, lng: lonRads)
+                
+                var h3Index10: H3Index = 0
+                var h3Index9: H3Index = 0
+                latLngToCell(&coord, Int32(10), &h3Index10)
+                latLngToCell(&coord, Int32(9), &h3Index9)
+                
+                return (String(h3Index10, radix: 16), String(h3Index9, radix: 16))
+            }.value
+            
+            // SQLite region lookup — also off main thread via OfflineDatabase's serial queue
+            let regionData = await Task.detached(priority: .userInitiated) {
+                OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9)
+            }.value
+            
+            // All @State mutations must happen on the main thread
+            await MainActor.run {
+                guard let regionData else {
+                    centeredRegionID = nil
+                    centeredMunicipalityName = "Unknown Area"
+                    centeredCantonName = "Unknown Canton"
+                    return
+                }
+                
+                centeredRegionID = regionData.regionID
+                
+                guard let metadata = RegionMetadataManager.shared.municipalities[regionData.regionID] else {
+                    return
+                }
+                
+                centeredMunicipalityName = getPrimaryName(from: metadata.name)
+                
+                // Look up total hexes for the Location Details progress bar
+                centeredMuniTotalHexes = regions.first(where: {
+                    $0.regionID == regionData.regionID
+                })?.totalHexes ?? 0
+                
+                if let canton = layerManager.cantons.first(where: { $0.id == metadata.cantonID }) {
+                    centeredCantonName = getPrimaryName(from: canton.name)
+                } else {
+                    centeredCantonName = "Canton \(metadata.cantonID)"
+                }
+            }
+        }
+    }
+    
+    // MARK: - Location Details Overlay
+    
+    /// Shown when the user taps the HUD pill. Displays municipality, canton, and country progress
+    /// for the area currently at the map crosshair.
+    private var regionDetailsOverlay: some View {
+        Color.black.opacity(0.4)
+            .ignoresSafeArea()
+            .onTapGesture { withAnimation { showRegionDetails = false } }
+            .overlay {
+                VStack(spacing: 0) {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text("Location Details")
+                                .font(.title2).bold()
+                            Text("Current Crosshair Area")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button { withAnimation { showRegionDetails = false } } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title)
+                                .foregroundStyle(.gray)
+                        }
+                    }
+                    .padding()
+                    
+                    VStack(spacing: 20) {
+                        // Municipality row — hexes explored vs total in this municipality
+                        let exploredCount = regions.first(where: {
+                            $0.regionID == centeredRegionID
+                        })?.exploredHexes.count ?? 0
+                        detailCard(
+                            icon: "mappin.and.ellipse",
+                            title: centeredMunicipalityName,
+                            subtitle: "Municipality",
+                            progressText: "\(exploredCount) / \(centeredMuniTotalHexes) Hexes Explored",
+                            percentage: centeredMuniTotalHexes > 0 ? Double(exploredCount) / Double(centeredMuniTotalHexes) : 0
+                        )
+                        
+                        // Canton row — municipalities visited vs total in this canton
+                        let cantonID = layerManager.cantons.first(where: {
+                            getPrimaryName(from: $0.name) == centeredCantonName
+                        })?.id
+                        let visitedInCanton = regions.filter {
+                            RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID == cantonID
+                        }.count
+                        let totalInCanton = RegionMetadataManager.shared.municipalities.values.filter {
+                            $0.cantonID == cantonID
+                        }.count
+                        detailCard(
+                            icon: "map",
+                            title: centeredCantonName,
+                            subtitle: "Canton",
+                            progressText: "\(visitedInCanton) / \(totalInCanton) Towns Visited",
+                            percentage: totalInCanton > 0 ? Double(visitedInCanton) / Double(totalInCanton) : 0
+                        )
+                        
+                        // Country row — cantons visited vs Switzerland's 26
+                        let visitedCantons = Set(regions.compactMap {
+                            RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
+                        }).count
+                        detailCard(
+                            icon: "globe.europe.africa.fill",
+                            title: "Switzerland",
+                            subtitle: "Country",
+                            progressText: "\(visitedCantons) / 26 Cantons Visited",
+                            percentage: Double(visitedCantons) / 26.0
+                        )
+                    }
+                    .padding(.horizontal)
+                    .padding(.bottom, 24)
+                }
+                .frame(maxWidth: 360)
+                .background(.ultraThickMaterial)
+                .cornerRadius(24)
+                .shadow(radius: 20)
+                .transition(.scale.combined(with: .opacity))
+            }
+    }
+    
+    /// Reusable card used in the Location Details overlay for each geographic level
+    private func detailCard(icon: String, title: String, subtitle: String, progressText: String, percentage: Double) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top) {
+                Image(systemName: icon)
+                    .font(.title2)
+                    .foregroundStyle(.orange)
+                    .frame(width: 32)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).font(.headline)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(progressText)
+                    .font(.subheadline).bold()
+                
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(.gray.opacity(0.2)).frame(height: 8).cornerRadius(4)
+                        Rectangle().fill(.orange)
+                            .frame(width: geo.size.width * CGFloat(min(percentage, 1.0)), height: 8)
+                            .cornerRadius(4)
+                    }
+                }
+                .frame(height: 8)
+            }
+            .padding(.leading, 40)
+        }
+        .padding()
+        .background(Color.white.opacity(0.1))
+        .cornerRadius(16)
+    }
+    
+    // MARK: - Explorer Profile Overlay
+    
+    /// Full stats overlay — shows hex count, area, national discovery progress, and unlocked achievements
+    private var statsOverlay: some View {
+        Color.black.opacity(0.4)
+            .ignoresSafeArea()
+            .onTapGesture { withAnimation { showStats = false } }
+            .overlay {
+                VStack(spacing: 0) {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(explorerTitle)
+                                .font(.caption).bold().foregroundStyle(.orange)
+                            Text("Explorer Profile")
+                                .font(.title2).bold()
+                        }
+                        Spacer()
+                        Button { withAnimation { showStats = false } } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title)
+                                .foregroundStyle(.gray)
+                        }
+                    }
+                    .padding()
+                    
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            // Summary cards — hex count, towns visited, area explored
+                            HStack(spacing: 15) {
+                                statCard(icon: "hexagon.fill", title: "Hexes", value: "\(exploredHexes.count)")
+                                statCard(icon: "map.fill", title: "Towns", value: "\(regions.count)")
+                                statCard(icon: "globe.europe.africa.fill", title: "Area", value: "\(calculateArea()) km²")
+                            }
+                            .padding(.horizontal)
+                            
+                            // National progress — cantons and municipalities vs Swiss totals
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("National Discovery").font(.headline)
+                                
+                                let visitedCantons = Set(regions.compactMap {
+                                    RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
+                                }).count
+                                progressRow(title: "Cantons Visited", current: visitedCantons, total: 26)
+                                progressRow(
+                                    title: "Municipalities Visited",
+                                    current: regions.count,
+                                    total: RegionMetadataManager.shared.municipalities.count
+                                )
+                            }
+                            .padding()
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(16)
+                            .padding(.horizontal)
+                            
+                            // Achievements — only unlocked ones shown, empty state handled
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Achievements").font(.headline)
+                                
+                                if currentUnlockedAchievements.isEmpty {
+                                    Text("Explore your first few hexes to unlock badges!")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    ForEach(currentUnlockedAchievements.reversed()) {
+                                        AchievementRow(achievement: $0)
+                                    }
+                                }
+                            }
+                            .padding()
+                        }
+                    }
+                }
+                .frame(maxWidth: 360, maxHeight: 650)
+                .background(.ultraThickMaterial)
+                .cornerRadius(24)
+                .shadow(radius: 20)
+                .transition(.scale.combined(with: .opacity))
+            }
+    }
+    
+    // MARK: - Stats Helpers
+    
+    /// Estimates explored area in km² — each hex at resolution 10 covers ~0.015 km²
+    private func calculateArea() -> String {
+        let sqKm = Double(exploredHexes.count) * 0.015
+        return String(format: "%.2f", sqKm)
+    }
+    
+    /// Explorer rank title shown at the top of the stats overlay — based on total hex count
+    private var explorerTitle: String {
+        let count = exploredHexes.count
+        if count < 100  { return "NOVICE WANDERER" }
+        if count < 1000 { return "LOCAL GUIDE" }
+        if count < 5000 { return "CITY CARTOGRAPHER" }
+        return "MASTER PATHFINDER"
+    }
+    
+    /// Reusable summary card used in the top row of the Explorer Profile
+    private func statCard(icon: String, title: String, value: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon).font(.title2).foregroundStyle(.orange)
+            Text(value).font(.title3).bold()
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(Color.white.opacity(0.1))
+        .cornerRadius(16)
+    }
+    
+    /// Reusable progress row used in the National Discovery section
+    private func progressRow(title: String, current: Int, total: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.subheadline)
+                Spacer()
+                Text("\(current) / \(total)").font(.subheadline).bold().foregroundStyle(.orange)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(.gray.opacity(0.2)).frame(height: 8).cornerRadius(4)
+                    Rectangle().fill(.orange)
+                        .frame(width: geo.size.width * CGFloat(Double(current) / Double(total)), height: 8)
+                        .cornerRadius(4)
+                }
+            }
+            .frame(height: 8)
+        }
+    }
+    
+    // MARK: - Achievement Logic
+    
+    /// Compares current unlocked achievements against persisted titles from previous launches.
+    /// Newly unlocked achievements are queued for banner display one at a time.
+    private func checkAchievements() {
+        let previousTitles = Set(unlockedAchievementTitles.split(separator: ",").map(String.init))
+        let newOnes = currentUnlockedAchievements.filter { !previousTitles.contains($0.title) }
+        
+        // Persist updated unlocked set using stable title strings (not UUID which regenerates each launch)
+        unlockedAchievementTitles = currentUnlockedAchievements.map { $0.title }.joined(separator: ",")
+        
+        if !newOnes.isEmpty {
+            bannerQueue.append(contentsOf: newOnes)
+            if !showAchievementBanner {
+                showNextBanner()
+            }
+        }
+    }
+    
+    /// Dequeues the next achievement for banner display, or hides the banner if the queue is empty
+    private func showNextBanner() {
+        guard !bannerQueue.isEmpty else {
+            showAchievementBanner = false
+            return
+        }
+        newlyUnlocked = [bannerQueue.removeFirst()]
+        showAchievementBanner = true
+    }
+    
+    // MARK: - Data Repair
+    
+    /// Fixes RegionExploration records where totalHexes was saved as 0 due to a SQLite race condition.
+    /// Runs once on launch, self-eliminates when all records are healthy, costs nothing on subsequent launches.
+    private func repairRegionTotals() {
+        let zeroRegions = regions.filter { $0.totalHexes == 0 }
+        guard !zeroRegions.isEmpty else { return }
+        
+        print("🔧 Repairing \(zeroRegions.count) regions with totalHexes = 0")
+        
+        for region in zeroRegions {
+            let total = OfflineDatabase.shared.getTotalHexes(for: region.regionID)
+            if total > 0 {
+                region.totalHexes = total
+                print("✅ Repaired \(region.name): \(total) total hexes")
+            }
+        }
+        
+        try? modelContext.save()
     }
 }
