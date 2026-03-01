@@ -1,3 +1,11 @@
+//
+//  LiveLocationDetector.swift
+//  VibeMap
+//
+//  Created by Jenna Jacquemyns on 22.02.2026.
+//
+
+
 import Foundation
 import CoreLocation
 import Observation

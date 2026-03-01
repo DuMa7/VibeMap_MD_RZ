@@ -4,16 +4,11 @@ import SwiftData
 @Model
 class ExploredHex {
     @Attribute(.unique) var h3Index: String
-    var resolution: Int // NEW: 9 (rural/lakes) or 10 (urban/street)
+    var resolution: Int
     var visitCount: Int = 1
     var firstVisited: Date = Date()
     var lastVisited: Date = Date()
-    
-    // Geographic attribution matching SQLite
     var regionID: String?
-    var communeName: String?
-    var cantonName: String?
-    var countryName: String?
     
     init(h3Index: String, resolution: Int, regionID: String? = nil) {
         self.h3Index = h3Index
