@@ -92,7 +92,9 @@ struct ContentView: View {
     private let liveDetector = LiveLocationDetector.shared
     
     // MARK: - Body
-    
+
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         ZStack(alignment: .top) {
             if isLoading {
@@ -102,6 +104,11 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.5), value: isLoading)
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                try? BackupManager(modelContext: modelContext).saveAutoBackup()
+            }
+        }
         .onAppear {
             // Inject the SwiftData context into LocationManager so it can persist hexes
             locationManager.modelContext = modelContext
