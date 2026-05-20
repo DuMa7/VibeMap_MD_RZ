@@ -14,6 +14,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     var userLocation: CLLocationCoordinate2D?
     var authorizationStatus: CLAuthorizationStatus = .notDetermined
     var modelContext: ModelContext?
+
+    /// Whether an exploration session is currently active.
+    /// GPS only records hexes during an active session.
+    var isSessionActive: Bool = false
     
     // PHASE 3: Improved batch system using Dictionary to hold DB context
     private var lastSavedHex: String?
@@ -53,14 +57,37 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         manager.allowsBackgroundLocationUpdates = true
         manager.pausesLocationUpdatesAutomatically = false
         manager.showsBackgroundLocationIndicator = true
-        
-        applyProfile(.unknown)
+        // Tracking starts only when a session is explicitly started
     }
-    
+
     func requestPermission() {
         manager.requestAlwaysAuthorization()
     }
-    
+
+    // MARK: - Session Control
+
+    func startSession() {
+        guard !isSessionActive else { return }
+        isSessionActive = true
+        if authorizationStatus == .notDetermined {
+            requestPermission()
+        } else if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
+            startTracking()
+        }
+        print("▶️ Exploration session started")
+    }
+
+    func stopSession() {
+        guard isSessionActive else { return }
+        flushPendingData()
+        isSessionActive = false
+        manager.stopUpdatingLocation()
+        activityManager.stopActivityUpdates()
+        // Fall back to low-power monitoring so userLocation stays roughly updated
+        manager.startMonitoringSignificantLocationChanges()
+        print("⏹️ Exploration session stopped")
+    }
+
     func startTracking() {
         if CMMotionActivityManager.isActivityAvailable() {
             startMotionDetection()
@@ -69,13 +96,13 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             applyProfile(.unknown)
         }
     }
-    
+
     func stopTracking() {
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
         manager.stopMonitoringVisits()
         activityManager.stopActivityUpdates()
-        
+
         flushPendingData()
     }
     
@@ -234,15 +261,17 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func applicationDidBecomeActive() {
         isInForeground = true
         flushPendingData()
-        if CMMotionActivityManager.isActivityAvailable() {
+        if isSessionActive, CMMotionActivityManager.isActivityAvailable() {
             startMotionDetection()
         }
     }
-    
+
     func applicationDidEnterBackground() {
         isInForeground = false
         flushPendingData()
-        applyProfile(.unknown)
+        if isSessionActive {
+            applyProfile(.unknown)
+        }
     }
     
     // MARK: - CLLocationManagerDelegate
@@ -251,7 +280,13 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         authorizationStatus = manager.authorizationStatus
         switch authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
-            startTracking()
+            if isSessionActive {
+                // Auth came in while a session was starting — begin full tracking
+                startTracking()
+            } else {
+                // Low-power monitoring so userLocation stays roughly updated
+                manager.startMonitoringSignificantLocationChanges()
+            }
         default:
             break
         }
@@ -259,13 +294,16 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
-        
+
         let locationAge = abs(location.timestamp.timeIntervalSinceNow)
         guard locationAge < 10 else { return }
         guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else { return }
-        
+
         userLocation = location.coordinate
-        
+
+        // Only record hexes during an active exploration session
+        guard isSessionActive else { return }
+
         let latRads = location.coordinate.latitude * .pi / 180.0
         let lonRads = location.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
@@ -306,9 +344,13 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
     
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-        beginBackgroundTask()
-        
         userLocation = visit.coordinate
+
+        // Only record hexes during an active exploration session
+        guard isSessionActive else { return }
+
+        beginBackgroundTask()
+
         let latRads = visit.coordinate.latitude * .pi / 180.0
         let lonRads = visit.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
