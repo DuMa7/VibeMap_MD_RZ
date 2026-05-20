@@ -5,26 +5,28 @@ struct MapView: View {
     @Binding var position: MapCameraPosition
     @Binding var currentSpan: Double
     @Binding var centerCoordinate: CLLocationCoordinate2D?
-    
+
     @State private var mapStyle: MapStyle = .standard
-    
-    /// Cache of pre-computed hex boundary polygons — keyed by h3Index.
-    /// Computed once per hex via the H3 C library, reused on every subsequent redraw.
-    /// Invalidated and rebuilt only when exploredHexes changes.
-    @State private var polygonCache: [String: [CLLocationCoordinate2D]] = [:]
-    
+
+    /// Merged outline polygons for all explored hexes — rebuilt asynchronously when hexes change.
+    /// Replaces N individual MapPolygon views with a handful of cluster outlines.
+    @State private var hexOutlines: [[CLLocationCoordinate2D]] = []
+
+    /// Merged outline polygons for res-9 hexes only — used at intermediate zoom levels.
+    @State private var res9Outlines: [[CLLocationCoordinate2D]] = []
+
     /// Canton IDs of all visited regions — cached to avoid recomputing on every render pass
     @State private var cachedCantonIDs: Set<String> = []
-    
+
     var exploredHexes: [ExploredHex]
     var regions: [RegionExploration]
     var layerManager: MapLayerManager
     var userLocation: CLLocationCoordinate2D?
-    
+
     var body: some View {
         Map(position: $position) {
             UserAnnotation()
-            
+
             if currentSpan >= 10.0 {
                 // World level — no overlays
             } else if currentSpan >= 2.0 {
@@ -46,22 +48,18 @@ struct MapView: View {
                     }
                 }
             } else if currentSpan >= 0.02 {
-                // Res 9 hexes only (rural/lake level)
-                ForEach(exploredHexes.filter { $0.resolution == 9 }, id: \.h3Index) { hex in
-                    if let polygon = polygonCache[hex.h3Index] {
-                        MapPolygon(coordinates: polygon)
-                            .foregroundStyle(.orange.opacity(0.4))
-                            .stroke(.orange, lineWidth: 1)
-                    }
+                // Neighbourhood level — res-9 merged outlines (rural/lake areas)
+                ForEach(res9Outlines.indices, id: \.self) { i in
+                    MapPolygon(coordinates: res9Outlines[i])
+                        .foregroundStyle(.orange.opacity(0.4))
+                        .stroke(.orange, lineWidth: 1)
                 }
             } else {
-                // All hexes (street level)
-                ForEach(exploredHexes, id: \.h3Index) { hex in
-                    if let polygon = polygonCache[hex.h3Index] {
-                        MapPolygon(coordinates: polygon)
-                            .foregroundStyle(.orange.opacity(0.4))
-                            .stroke(.orange, lineWidth: 1)
-                    }
+                // Street level — all hexes as merged outlines
+                ForEach(hexOutlines.indices, id: \.self) { i in
+                    MapPolygon(coordinates: hexOutlines[i])
+                        .foregroundStyle(.orange.opacity(0.4))
+                        .stroke(.orange, lineWidth: 1)
                 }
             }
         }
@@ -72,15 +70,13 @@ struct MapView: View {
             currentSpan = context.region.span.latitudeDelta
             centerCoordinate = context.region.center
         }
-        // Seed both caches on first appear
         .onAppear {
             cachedCantonIDs = buildCantonIDs()
-            rebuildPolygonCache()
+            rebuildOutlines(exploredHexes)
         }
-        // Rebuild polygon cache only when the hex list changes
-        .onChange(of: exploredHexes) { _, _ in
-            rebuildPolygonCache()
+        .onChange(of: exploredHexes) { _, newHexes in
             cachedCantonIDs = buildCantonIDs()
+            rebuildOutlines(newHexes)
         }
         .overlay(alignment: .bottomTrailing) {
             Menu {
@@ -100,58 +96,38 @@ struct MapView: View {
             .padding(.bottom, 40)
         }
     }
-    
-    // MARK: - Cache Builders
-    
-    /// Builds the polygon cache for all explored hexes.
-    /// Only hexes not already in the cache are computed — existing entries are preserved.
-    /// This means adding 1 new hex only computes 1 new polygon, not all of them.
-    private func rebuildPolygonCache() {
-        let newHexes = exploredHexes.filter { polygonCache[$0.h3Index] == nil }
-        guard !newHexes.isEmpty else { return }
-        
-        for hex in newHexes {
-            if let polygon = computePolygon(h3Index: hex.h3Index) {
-                polygonCache[hex.h3Index] = polygon
+
+    // MARK: - Outline Builder
+
+    /// Merges all explored hexes into cluster outlines off the main thread.
+    /// O(N) in hex count. Two separate merges: all hexes + res-9 only.
+    private func rebuildOutlines(_ hexes: [ExploredHex]) {
+        Task.detached(priority: .userInitiated) {
+            let allIndices  = hexes.map { $0.h3Index }
+            let res9Indices = hexes.filter { $0.resolution == 9 }.map { $0.h3Index }
+
+            let all  = H3Wrapper.mergeHexOutlines(allIndices)
+            let res9 = H3Wrapper.mergeHexOutlines(res9Indices)
+
+            print("📐 Merged outlines: \(all.count) rings from \(allIndices.count) hexes")
+
+            await MainActor.run {
+                hexOutlines  = all
+                res9Outlines = res9
             }
         }
-        
-        print("📐 Polygon cache: added \(newHexes.count) new entries, total \(polygonCache.count)")
     }
-    
-    /// Builds the canton ID set from visited regions.
-    /// Only recalculated when the regions array changes.
+
+    // MARK: - Canton Cache
+
     private func buildCantonIDs() -> Set<String> {
-        let ids = regions.compactMap { region in
+        Set(regions.compactMap { region in
             RegionMetadataManager.shared.municipalities[region.regionID]?.cantonID
-        }
-        return Set(ids)
+        })
     }
-    
-    // MARK: - Helpers
-    
-    /// Computes the boundary polygon for a single hex index via the H3 C library.
-    /// This is the only place the C library is called — result is cached immediately after.
-    private func computePolygon(h3Index: String) -> [CLLocationCoordinate2D]? {
-        guard let index = UInt64(h3Index, radix: 16) else { return nil }
-        var cellBoundary = CellBoundary()
-        let error = cellToBoundary(index, &cellBoundary)
-        guard error == 0 else { return nil }
-        
-        var coordinates: [CLLocationCoordinate2D] = []
-        withUnsafeBytes(of: cellBoundary.verts) { rawBuffer in
-            let vertsBuffer = rawBuffer.bindMemory(to: LatLng.self)
-            for i in 0..<Int(cellBoundary.numVerts) {
-                let vertex = vertsBuffer[i]
-                coordinates.append(CLLocationCoordinate2D(
-                    latitude:  vertex.lat * 180.0 / .pi,
-                    longitude: vertex.lng * 180.0 / .pi
-                ))
-            }
-        }
-        return coordinates
-    }
-    
+
+    // MARK: - Region Color
+
     /// Returns an opacity-scaled orange style for a region based on its exploration percentage.
     /// Regions with 0 totalHexes return clear to avoid division by zero.
     private func colorForRegion(_ id: String) -> AnyShapeStyle {
@@ -163,8 +139,8 @@ struct MapView: View {
     }
 }
 
-extension CLLocationCoordinate2D: Equatable {
+extension CLLocationCoordinate2D: @retroactive Equatable {
     public static func == (lhs: CLLocationCoordinate2D, rhs: CLLocationCoordinate2D) -> Bool {
-        return lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude
+        lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude
     }
 }
