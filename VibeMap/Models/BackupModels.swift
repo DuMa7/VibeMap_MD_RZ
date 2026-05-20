@@ -1,17 +1,16 @@
 import Foundation
 
-// A container for all our app data
 struct BackupData: Codable {
     let version: Int
     let timestamp: Date
     let hexes: [HexBackupDTO]
-    let regions: [RegionBackupDTO] // Changed from cities
+    let regions: [RegionBackupDTO]
 }
 
 struct HexBackupDTO: Codable {
     let h3Index: String
-    let resolution: Int // NEW
-    let regionID: String? // NEW
+    let resolution: Int
+    let regionID: String?
     let visitCount: Int
     let firstVisited: Date
     let lastVisited: Date
@@ -25,4 +24,24 @@ struct RegionBackupDTO: Codable {
     let exploredHexes: [String]
     let firstVisited: Date
     let lastVisited: Date
+}
+
+/// Summary of a backup file — shown in the restore preview before committing.
+struct BackupPreview {
+    let hexCount: Int
+    let regionCount: Int
+    let timestamp: Date
+    let version: Int
+}
+
+enum BackupError: LocalizedError {
+    case encodingFailed
+    case noData
+
+    var errorDescription: String? {
+        switch self {
+        case .encodingFailed: return "Failed to encode backup data."
+        case .noData: return "No data to back up."
+        }
+    }
 }
