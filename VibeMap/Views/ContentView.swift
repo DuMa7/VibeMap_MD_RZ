@@ -78,8 +78,16 @@ struct ContentView: View {
     /// Queue of achievements waiting to be shown — displayed one at a time after each banner dismisses
     @State private var bannerQueue: [Achievement] = []
     
+    // MARK: - Session State
+
+    /// Controls the "Exploring somewhere new today?" launch prompt
+    @State private var showExplorationPrompt = false
+
+    /// Drives the pulsing animation on the recording dot in the HUD pill
+    @State private var recordingPulse: Bool = false
+
     // MARK: - Live Location
-    
+
     /// Detects the user's current municipality in real time — kept for future use but not driving the pill directly
     private let liveDetector = LiveLocationDetector.shared
     
@@ -100,9 +108,14 @@ struct ContentView: View {
             
             // Dismiss splash screen after 2.5s then seed initial achievement state
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
-                isLoading = false
+                withAnimation { isLoading = false }
                 repairRegionTotals()
                 checkAchievements()
+                if !locationManager.isSessionActive {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        showExplorationPrompt = true
+                    }
+                }
             }
         }
         // Center the map on the user's first location fix only.
@@ -182,14 +195,24 @@ struct ContentView: View {
                     withAnimation { showRegionDetails = true }
                 }) {
                     HStack(spacing: 12) {
+                        if locationManager.isSessionActive {
+                            Circle()
+                                .fill(.red)
+                                .frame(width: 8, height: 8)
+                                .opacity(recordingPulse ? 0.25 : 1.0)
+                                .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: recordingPulse)
+                                .onAppear { recordingPulse = true }
+                                .onDisappear { recordingPulse = false }
+                        }
+
                         Text(currentZoomLabel)
                             .font(.subheadline)
                             .bold()
                             .foregroundStyle(.primary)
                             .contentTransition(.interpolate)
-                        
+
                         Divider().frame(height: 20)
-                        
+
                         Text(currentZoomPercentage)
                             .font(.subheadline)
                             .monospacedDigit()
@@ -219,10 +242,11 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.top, 10)
             
-            // MARK: Recenter Button
+            // MARK: Bottom Controls — Recenter + Session Toggle
             VStack {
                 Spacer()
-                HStack {
+                HStack(alignment: .bottom) {
+                    // Recenter
                     Button {
                         if let userLocation = locationManager.userLocation {
                             withAnimation(.easeInOut(duration: 0.5)) {
@@ -243,11 +267,21 @@ struct ContentView: View {
                     }
                     .disabled(locationManager.userLocation == nil)
                     .opacity(locationManager.userLocation == nil ? 0.5 : 1.0)
-                    .padding(.leading, 16)
-                    .padding(.bottom, 40)
-                    
+
                     Spacer()
+
+                    // Session toggle
+                    sessionToggleButton
                 }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 40)
+            }
+
+            // MARK: Exploration Prompt
+            if showExplorationPrompt {
+                explorationPromptOverlay
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .zIndex(10)
             }
             
             // MARK: Achievement Banner & Confetti
@@ -276,6 +310,93 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Session UI
+
+    private var sessionToggleButton: some View {
+        Button {
+            let generator = UIImpactFeedbackGenerator(style: .medium)
+            generator.impactOccurred()
+            if locationManager.isSessionActive {
+                locationManager.stopSession()
+            } else {
+                locationManager.startSession()
+            }
+        } label: {
+            HStack(spacing: 8) {
+                if locationManager.isSessionActive {
+                    Circle()
+                        .fill(.red)
+                        .frame(width: 9, height: 9)
+                    Text("Stop")
+                        .font(.subheadline).bold()
+                        .foregroundStyle(.red)
+                } else {
+                    Image(systemName: "play.fill")
+                        .font(.caption).bold()
+                        .foregroundStyle(.white)
+                    Text("Explore")
+                        .font(.subheadline).bold()
+                        .foregroundStyle(.white)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .background(locationManager.isSessionActive ? Color.red.opacity(0.15) : Color.green)
+            .clipShape(Capsule())
+            .shadow(radius: 4)
+        }
+    }
+
+    private var explorationPromptOverlay: some View {
+        Color.black.opacity(0.45)
+            .ignoresSafeArea()
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 20) {
+                    Image(systemName: "figure.walk.motion")
+                        .font(.system(size: 52))
+                        .foregroundStyle(.orange)
+
+                    VStack(spacing: 8) {
+                        Text("Exploring somewhere new today?")
+                            .font(.title2).bold()
+                            .multilineTextAlignment(.center)
+
+                        Text("Start a session to scratch new hexes on your map. GPS runs only while exploring.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Button {
+                        locationManager.startSession()
+                        withAnimation { showExplorationPrompt = false }
+                    } label: {
+                        Label("Start Exploring", systemImage: "play.fill")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(.green)
+                            .cornerRadius(16)
+                    }
+
+                    Button {
+                        withAnimation { showExplorationPrompt = false }
+                    } label: {
+                        Text("Not right now")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(28)
+                .background(.ultraThickMaterial)
+                .cornerRadius(28)
+                .shadow(radius: 24)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 40)
+            }
+    }
+
     // MARK: - HUD Pill Logic
     
     /// Strips secondary names from bilingual Swiss place names (e.g. "Biel/Bienne" → "Biel")
