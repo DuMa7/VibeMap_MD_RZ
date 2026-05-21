@@ -6,8 +6,6 @@ struct MapView: View {
     @Binding var currentSpan: Double
     @Binding var centerCoordinate: CLLocationCoordinate2D?
 
-    @State private var mapStyle: MapStyle = .standard
-
     /// Merged outline polygons for all explored hexes — rebuilt asynchronously when hexes change.
     /// Replaces N individual MapPolygon views with a handful of cluster outlines.
     @State private var hexOutlines: [[CLLocationCoordinate2D]] = []
@@ -21,49 +19,48 @@ struct MapView: View {
     var exploredHexes: [ExploredHex]
     var regions: [RegionExploration]
     var layerManager: MapLayerManager
+    var layerSettings: MapLayerSettings
     var userLocation: CLLocationCoordinate2D?
 
     var body: some View {
         Map(position: $position) {
             UserAnnotation()
 
-            if currentSpan >= 10.0 {
-                // World level — no overlays
-            } else if currentSpan >= 2.0 {
-                ForEach(layerManager.cantons.filter { cachedCantonIDs.contains($0.id) }) { canton in
-                    ForEach(0..<canton.polygons.count, id: \.self) { i in
-                        MapPolygon(coordinates: canton.polygons[i])
-                            .foregroundStyle(.orange.opacity(0.5))
-                            .stroke(.white, lineWidth: 1.5)
+            if layerSettings.showExploredHexes && currentSpan < 10.0 {
+                if currentSpan >= 2.0 {
+                    ForEach(layerManager.cantons.filter { cachedCantonIDs.contains($0.id) }) { canton in
+                        ForEach(0..<canton.polygons.count, id: \.self) { i in
+                            MapPolygon(coordinates: canton.polygons[i])
+                                .foregroundStyle(.orange.opacity(0.5))
+                                .stroke(.white, lineWidth: 1.5)
+                        }
                     }
-                }
-            } else if currentSpan >= 0.2 {
-                ForEach(layerManager.municipalities.filter { muni in
-                    regions.contains(where: { $0.regionID == muni.id })
-                }) { muni in
-                    ForEach(0..<muni.polygons.count, id: \.self) { i in
-                        MapPolygon(coordinates: muni.polygons[i])
-                            .foregroundStyle(colorForRegion(muni.id))
-                            .stroke(.white.opacity(0.3), lineWidth: 0.5)
+                } else if currentSpan >= 0.2 {
+                    ForEach(layerManager.municipalities.filter { muni in
+                        regions.contains(where: { $0.regionID == muni.id })
+                    }) { muni in
+                        ForEach(0..<muni.polygons.count, id: \.self) { i in
+                            MapPolygon(coordinates: muni.polygons[i])
+                                .foregroundStyle(colorForRegion(muni.id))
+                                .stroke(.white.opacity(0.3), lineWidth: 0.5)
+                        }
                     }
-                }
-            } else if currentSpan >= 0.02 {
-                // Neighbourhood level — res-9 merged outlines (rural/lake areas)
-                ForEach(res9Outlines.indices, id: \.self) { i in
-                    MapPolygon(coordinates: res9Outlines[i])
-                        .foregroundStyle(.orange.opacity(0.4))
-                        .stroke(.orange, lineWidth: 1)
-                }
-            } else {
-                // Street level — all hexes as merged outlines
-                ForEach(hexOutlines.indices, id: \.self) { i in
-                    MapPolygon(coordinates: hexOutlines[i])
-                        .foregroundStyle(.orange.opacity(0.4))
-                        .stroke(.orange, lineWidth: 1)
+                } else if currentSpan >= 0.02 {
+                    ForEach(res9Outlines.indices, id: \.self) { i in
+                        MapPolygon(coordinates: res9Outlines[i])
+                            .foregroundStyle(.orange.opacity(0.4))
+                            .stroke(.orange, lineWidth: 1)
+                    }
+                } else {
+                    ForEach(hexOutlines.indices, id: \.self) { i in
+                        MapPolygon(coordinates: hexOutlines[i])
+                            .foregroundStyle(.orange.opacity(0.4))
+                            .stroke(.orange, lineWidth: 1)
+                    }
                 }
             }
         }
-        .mapStyle(mapStyle)
+        .mapStyle(layerSettings.baseStyle.mapStyle)
         .mapControlVisibility(.hidden)
         .animation(.easeInOut(duration: 0.5), value: currentSpan)
         .onMapCameraChange(frequency: .onEnd) { context in
@@ -77,23 +74,6 @@ struct MapView: View {
         .onChange(of: exploredHexes) { _, newHexes in
             cachedCantonIDs = buildCantonIDs()
             rebuildOutlines(newHexes)
-        }
-        .overlay(alignment: .bottomTrailing) {
-            Menu {
-                Button { mapStyle = .standard } label: { Label("Standard", systemImage: "map") }
-                Button { mapStyle = .hybrid }  label: { Label("Satellite", systemImage: "globe.americas.fill") }
-                Button { mapStyle = .imagery } label: { Label("Imagery", systemImage: "photo") }
-            } label: {
-                Image(systemName: "map.fill")
-                    .font(.title3)
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(.gray.opacity(0.8))
-                    .clipShape(Circle())
-                    .shadow(radius: 4)
-            }
-            .padding(.trailing, 16)
-            .padding(.bottom, 40)
         }
     }
 

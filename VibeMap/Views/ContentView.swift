@@ -86,6 +86,14 @@ struct ContentView: View {
     /// Drives the pulsing animation on the recording dot in the HUD pill
     @State private var recordingPulse: Bool = false
 
+    // MARK: - Layer State
+
+    /// Base map style + overlay toggle state — shared with MapView
+    @State private var layerSettings = MapLayerSettings()
+
+    /// Controls visibility of the layer switcher panel
+    @State private var showLayerPanel = false
+
     // MARK: - Live Location
 
     /// Detects the user's current municipality in real time — kept for future use but not driving the pill directly
@@ -175,6 +183,7 @@ struct ContentView: View {
                 exploredHexes: exploredHexes,
                 regions: regions,
                 layerManager: layerManager,
+                layerSettings: layerSettings,
                 userLocation: locationManager.userLocation
             )
             .ignoresSafeArea()
@@ -249,7 +258,7 @@ struct ContentView: View {
             .padding(.horizontal)
             .padding(.top, 10)
             
-            // MARK: Bottom Controls — Recenter + Session Toggle
+            // MARK: Bottom Controls — Recenter + Layers + Session Toggle
             VStack {
                 Spacer()
                 HStack(alignment: .bottom) {
@@ -277,11 +286,47 @@ struct ContentView: View {
 
                     Spacer()
 
-                    // Session toggle
-                    sessionToggleButton
+                    VStack(alignment: .trailing, spacing: 12) {
+                        // Layers button
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                                showLayerPanel.toggle()
+                            }
+                        } label: {
+                            Image(systemName: "square.3.layers.3d")
+                                .font(.title3)
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(showLayerPanel ? Color.orange : Color.gray.opacity(0.8))
+                                .clipShape(Circle())
+                                .shadow(radius: 4)
+                        }
+
+                        // Session toggle
+                        sessionToggleButton
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 40)
+            }
+
+            // MARK: Layer Panel
+            if showLayerPanel {
+                Color.clear
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            showLayerPanel = false
+                        }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        LayerPanelView(settings: layerSettings)
+                            .padding(.trailing, 16)
+                            .padding(.bottom, 148)
+                    }
+                    .transition(.opacity)
+                    .zIndex(4)
             }
 
             // MARK: Exploration Prompt
