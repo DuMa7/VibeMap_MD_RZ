@@ -102,19 +102,23 @@ struct MapView: View {
     /// Merges all explored hexes into cluster outlines off the main thread.
     /// O(N) in hex count. Two separate merges: all hexes + res-9 only.
     private func rebuildOutlines(_ hexes: [ExploredHex]) {
-        Task.detached(priority: .userInitiated) {
-            let allIndices  = hexes.map { $0.h3Index }
-            let res9Indices = hexes.filter { $0.resolution == 9 }.map { $0.h3Index }
+        // Extract Strings (Sendable) before the detached task — ExploredHex is a
+        // SwiftData @Model class and cannot be safely captured in a @Sendable closure.
+        let allIndices  = hexes.map { $0.h3Index }
+        let res9Indices = hexes.filter { $0.resolution == 9 }.map { $0.h3Index }
 
-            let all  = H3Wrapper.mergeHexOutlines(allIndices)
-            let res9 = H3Wrapper.mergeHexOutlines(res9Indices)
-
-            print("📐 Merged outlines: \(all.count) rings from \(allIndices.count) hexes")
-
-            await MainActor.run {
-                hexOutlines  = all
-                res9Outlines = res9
-            }
+        Task {
+            // Run the heavy O(N) merge on a background thread, then update @State
+            // back on the main actor (inherited by the outer Task).
+            async let all  = Task.detached(priority: .userInitiated) {
+                H3Wrapper.mergeHexOutlines(allIndices)
+            }.value
+            async let res9 = Task.detached(priority: .userInitiated) {
+                H3Wrapper.mergeHexOutlines(res9Indices)
+            }.value
+            hexOutlines  = await all
+            res9Outlines = await res9
+            print("📐 Merged outlines: \(hexOutlines.count) rings from \(allIndices.count) hexes")
         }
     }
 
