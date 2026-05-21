@@ -4,13 +4,11 @@ import Foundation
 import CoreLocation
 import Observation
 import SwiftData
-import CoreMotion
 
 @Observable
 class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
-    private let activityManager = CMMotionActivityManager()
-    
+
     var userLocation: CLLocationCoordinate2D?
     var authorizationStatus: CLAuthorizationStatus = .notDetermined
     var modelContext: ModelContext?
@@ -18,43 +16,18 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     /// Whether an exploration session is currently active.
     /// GPS only records hexes during an active session.
     var isSessionActive: Bool = false
-    
-    // PHASE 3: Improved batch system using Dictionary to hold DB context
+
     private var lastSavedHex: String?
     private var pendingHexes: [String: (resolution: Int, regionID: String)] = [:]
 
     // Already-explored suppression (6.3): O(1) set built at session start.
     // Hexes in this set skip SQLite → SwiftData entirely on subsequent visits.
     private var exploredHexSet: Set<String> = []
-    
-    // Track the last time we flushed pending data
+
     private var lastFlushTime: Date? = nil
-    
-    // Track app state
     private var isInForeground = true
-    
-    // Background task identifier
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
-    
-    // Motion detection
-    private var currentProfile: TrackingProfile = .unknown
-    
-    enum TrackingProfile {
-        case walking
-        case stationary
-        case driving
-        case unknown
-        
-        var description: String {
-            switch self {
-            case .walking: return "Walking 🚶"
-            case .stationary: return "Stationary 🛑"
-            case .driving: return "Driving 🚗"
-            case .unknown: return "Unknown ❓"
-            }
-        }
-    }
-    
+
     override init() {
         super.init()
         manager.delegate = self
@@ -88,8 +61,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         isSessionActive = false
         exploredHexSet.removeAll()
         manager.stopUpdatingLocation()
-        activityManager.stopActivityUpdates()
-        // Fall back to low-power monitoring so userLocation stays roughly updated
+        // Significant-change monitoring keeps userLocation roughly updated at minimal battery cost
         manager.startMonitoringSignificantLocationChanges()
         print("⏹️ Exploration session stopped")
     }
@@ -102,80 +74,29 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     func startTracking() {
-        if CMMotionActivityManager.isActivityAvailable() {
-            startMotionDetection()
-        } else {
-            print("⚠️ Motion detection not available - using default profile")
-            applyProfile(.unknown)
-        }
+        applySessionProfile()
     }
 
-    func stopTracking() {
-        manager.stopUpdatingLocation()
-        manager.stopMonitoringSignificantLocationChanges()
-        manager.stopMonitoringVisits()
-        activityManager.stopActivityUpdates()
+    // MARK: - Session Accuracy Profile
 
-        flushPendingData()
-    }
-    
-    // MARK: - Motion Detection
-    
-    private func startMotionDetection() {
-        activityManager.startActivityUpdates(to: .main) { [weak self] activity in
-            guard let self = self, let activity = activity else { return }
-            self.handleActivityChange(activity)
-        }
-    }
-    
-    private func handleActivityChange(_ activity: CMMotionActivity) {
-        let newProfile: TrackingProfile
-        
-        if activity.stationary {
-            newProfile = .stationary
-        } else if activity.walking || activity.running {
-            newProfile = .walking
-        } else if activity.automotive {
-            newProfile = .driving
-        } else {
-            newProfile = .unknown
-        }
-        
-        if newProfile != currentProfile {
-            print("🔄 Activity changed: \(currentProfile.description) → \(newProfile.description)")
-            currentProfile = newProfile
-            applyProfile(newProfile)
-        }
-    }
-    
-    private func applyProfile(_ profile: TrackingProfile) {
+    /// Two-tier GPS profile for active sessions.
+    /// Foreground: best accuracy for precise hex detection while the user is watching the map.
+    /// Background: relaxed accuracy to conserve battery while still catching hex transitions.
+    /// Outside a session the manager runs significant-change monitoring only (see stopSession).
+    private func applySessionProfile() {
         manager.stopUpdatingLocation()
         manager.stopMonitoringSignificantLocationChanges()
-        
-        switch profile {
-        case .walking:
+
+        if isInForeground {
             manager.desiredAccuracy = kCLLocationAccuracyBest
-            manager.distanceFilter = 20
-            manager.startUpdatingLocation()
-            print("📍 Tracking mode: WALKING")
-            
-        case .driving:
+            manager.distanceFilter = 15
+            print("📍 Session profile: FOREGROUND (best accuracy, 15 m)")
+        } else {
             manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
             manager.distanceFilter = 50
-            manager.startUpdatingLocation()
-            print("📍 Tracking mode: DRIVING")
-            
-        case .stationary:
-            manager.startMonitoringSignificantLocationChanges()
-            manager.startMonitoringVisits()
-            print("📍 Tracking mode: STATIONARY")
-            
-        case .unknown:
-            manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-            manager.distanceFilter = 30
-            manager.startUpdatingLocation()
-            print("📍 Tracking mode: UNKNOWN")
+            print("📍 Session profile: BACKGROUND (10 m accuracy, 50 m filter)")
         }
+        manager.startUpdatingLocation()
     }
     
     // MARK: - Smart Flushing System
@@ -274,17 +195,13 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func applicationDidBecomeActive() {
         isInForeground = true
         flushPendingData()
-        if isSessionActive, CMMotionActivityManager.isActivityAvailable() {
-            startMotionDetection()
-        }
+        if isSessionActive { applySessionProfile() }
     }
 
     func applicationDidEnterBackground() {
         isInForeground = false
         flushPendingData()
-        if isSessionActive {
-            applyProfile(.unknown)
-        }
+        if isSessionActive { applySessionProfile() }
     }
     
     // MARK: - CLLocationManagerDelegate
