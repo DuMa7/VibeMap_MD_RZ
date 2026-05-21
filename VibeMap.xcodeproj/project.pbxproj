@@ -38,7 +38,6 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				App/Info.plist,
-				Helpers/H3Wrapper.swift,
 			);
 			target = A2140D972F3754A4003CC14E /* VibeMap */;
 		};
@@ -50,7 +49,6 @@
 			buildPhase = A2140D962F3754A4003CC14E /* Resources */;
 			membershipExceptions = (
 				App/BridgingHeader.h,
-				Helpers/H3Wrapper.swift,
 			);
 		};
 /* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
