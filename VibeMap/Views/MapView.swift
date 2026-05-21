@@ -111,10 +111,10 @@ struct MapView: View {
             // Run the heavy O(N) merge on a background thread, then update @State
             // back on the main actor (inherited by the outer Task).
             async let all  = Task.detached(priority: .userInitiated) {
-                H3Wrapper.mergeHexOutlines(allIndices)
+                HexMerger.mergeHexOutlines(allIndices)
             }.value
             async let res9 = Task.detached(priority: .userInitiated) {
-                H3Wrapper.mergeHexOutlines(res9Indices)
+                HexMerger.mergeHexOutlines(res9Indices)
             }.value
             hexOutlines  = await all
             res9Outlines = await res9
