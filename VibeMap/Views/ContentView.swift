@@ -54,7 +54,10 @@ struct ContentView: View {
     
     /// Controls visibility of the Explorer Profile stats overlay
     @State private var showStats = false
-    
+
+    /// Controls visibility of the Canton Passport sheet
+    @State private var showPassport = false
+
     /// Controls visibility of the Settings sheet
     @State private var showSettings = false
     
@@ -160,6 +163,9 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showPassport) {
+            PassportView(regions: regions, cantons: layerManager.cantons)
+        }
     }
     
     // MARK: - Computed Achievement State
@@ -720,7 +726,40 @@ struct ContentView: View {
                             .cornerRadius(16)
                             .padding(.horizontal)
                             
-                            // Achievements — only unlocked ones shown, empty state handled
+                            // Canton Passport entry point
+                        Button {
+                            withAnimation { showStats = false }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                showPassport = true
+                            }
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "book.closed.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.orange)
+                                    .frame(width: 32)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Canton Passport")
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    let visitedC = Set(regions.compactMap {
+                                        RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
+                                    }).count
+                                    Text("\(visitedC) / 26 cantons explored")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding()
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(16)
+                        }
+                        .padding(.horizontal)
+
+                        // Achievements — only unlocked ones shown, empty state handled
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("Achievements").font(.headline)
                                 
