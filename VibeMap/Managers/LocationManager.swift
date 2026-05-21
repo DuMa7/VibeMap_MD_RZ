@@ -22,6 +22,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     // PHASE 3: Improved batch system using Dictionary to hold DB context
     private var lastSavedHex: String?
     private var pendingHexes: [String: (resolution: Int, regionID: String)] = [:]
+
+    // Already-explored suppression (6.3): O(1) set built at session start.
+    // Hexes in this set skip SQLite → SwiftData entirely on subsequent visits.
+    private var exploredHexSet: Set<String> = []
     
     // Track the last time we flushed pending data
     private var lastFlushTime: Date? = nil
@@ -69,6 +73,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func startSession() {
         guard !isSessionActive else { return }
         isSessionActive = true
+        buildExploredSet()
         if authorizationStatus == .notDetermined {
             requestPermission()
         } else if authorizationStatus == .authorizedAlways || authorizationStatus == .authorizedWhenInUse {
@@ -81,11 +86,19 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         guard isSessionActive else { return }
         flushPendingData()
         isSessionActive = false
+        exploredHexSet.removeAll()
         manager.stopUpdatingLocation()
         activityManager.stopActivityUpdates()
         // Fall back to low-power monitoring so userLocation stays roughly updated
         manager.startMonitoringSignificantLocationChanges()
         print("⏹️ Exploration session stopped")
+    }
+
+    private func buildExploredSet() {
+        guard let context = modelContext else { return }
+        let allHexes = (try? context.fetch(FetchDescriptor<ExploredHex>())) ?? []
+        exploredHexSet = Set(allHexes.map { $0.h3Index })
+        print("🧠 Suppression set: \(exploredHexSet.count) known hexes loaded")
     }
 
     func startTracking() {
@@ -186,6 +199,8 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             ((try? context.fetch(batchDescriptor)) ?? []).map { $0.h3Index }
         )
 
+        var newHexIndices: [String] = []
+
         for (hexIndex, data) in pendingHexes {
             // O(1) set lookup instead of a database round trip
             if alreadyExplored.contains(hexIndex) {
@@ -194,27 +209,28 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                 // 1. Save the brand new hex to SwiftData
                 let newHex = ExploredHex(h3Index: hexIndex, resolution: data.resolution, regionID: data.regionID)
                     context.insert(newHex)
-                    
+                newHexIndices.append(hexIndex)
+
                 // 2. INCREMENT REGION PROGRESS
                 let regionIdToFind = data.regionID
                 let regionDescriptor = FetchDescriptor<RegionExploration>(
                     predicate: #Predicate { $0.regionID == regionIdToFind }
                 )
-                    
+
                 if let region = try? context.fetch(regionDescriptor).first {
                     // The region tracker already exists, just add the new hex!
                     region.addExploredHex(hexIndex)
                 } else {
                     // 3. FIRST TIME DISCOVERY
                     print("✨ Discovered a brand new region with ID: \(data.regionID)")
-                                        
+
                     // Look up the real name and Canton ID from our GeoJSON metadata
                     let metadata = RegionMetadataManager.shared.municipalities[data.regionID]
                     let regionName = metadata?.name ?? "Unknown Region"
-                                        
+
                     // Ask SQLite exactly how many hexes make up this municipality
                     let totalHexes = OfflineDatabase.shared.getTotalHexes(for: data.regionID)
-                                        
+
                     // Create the progress tracker!
                     let newRegion = RegionExploration(
                         regionID: data.regionID,
@@ -222,20 +238,17 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                         type: "Municipality",
                         totalHexes: totalHexes
                     )
-                                        
+
                     newRegion.addExploredHex(hexIndex)
                     context.insert(newRegion)
-                                        
-                    // Bonus: You can now easily expand this right here to create
-                    // a tracker for metadata?.cantonID to power your Canton zoom view!
                 }
             }
         }
-            
+
         do {
             try context.save()
             print("✅ Successfully flushed data to database")
-                 
+            for hexIndex in newHexIndices { exploredHexSet.insert(hexIndex) }
             pendingHexes.removeAll()
             lastFlushTime = Date()
         } catch {
@@ -320,21 +333,24 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         // 2. Query the SQLite database natively (NO NETWORK!)
         if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
             let activeHex = regionData.matchedHex
-            
-            // 3. HEX GEOFENCING
-            if activeHex != lastSavedHex {
-                print("📍 New hex entered: \(activeHex) (Res \(regionData.resolution))")
-                
+
+            // 3. Cheap geofence: same hex as last update — skip immediately
+            guard activeHex != lastSavedHex else { return }
+
+            // 4. Already-explored suppression: O(1) check, no SwiftData needed
+            guard !exploredHexSet.contains(activeHex) else {
                 lastSavedHex = activeHex
-                
-                // Add to Dictionary batch with database info
-                pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
-                
-                if isInForeground {
-                    if pendingHexes.count >= 1 { flushPendingData() } //change this later to 5 again otherwise will constantly refresh
-                } else {
-                    flushPendingData()
-                }
+                return
+            }
+
+            print("📍 New hex entered: \(activeHex) (Res \(regionData.resolution))")
+            lastSavedHex = activeHex
+            pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
+
+            if isInForeground {
+                if pendingHexes.count >= 1 { flushPendingData() }
+            } else {
+                flushPendingData()
             }
         }
     }
@@ -365,14 +381,16 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         
         if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
             let activeHex = regionData.matchedHex
-            
+
             if activeHex != lastSavedHex {
                 lastSavedHex = activeHex
-                pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
-                flushPendingData()
+                if !exploredHexSet.contains(activeHex) {
+                    pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
+                    flushPendingData()
+                }
             }
         }
-        
+
         endBackgroundTask()
     }
     
