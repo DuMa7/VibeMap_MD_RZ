@@ -122,47 +122,40 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
 
         var newHexIndices: [String] = []
 
+        // Batch-fetch all RegionExploration records that will be touched in this flush.
+        // Replaces N per-iteration FetchDescriptor calls with one query.
+        let candidateRegionIDs = Array(Set(
+            pendingHexes.compactMap { alreadyExplored.contains($0.key) ? nil : $0.value.regionID }
+        ))
+        let regionBatchDescriptor = FetchDescriptor<RegionExploration>(
+            predicate: #Predicate<RegionExploration> { candidateRegionIDs.contains($0.regionID) }
+        )
+        var regionCache: [String: RegionExploration] = Dictionary(
+            uniqueKeysWithValues: ((try? context.fetch(regionBatchDescriptor)) ?? []).map { ($0.regionID, $0) }
+        )
+
         for (hexIndex, data) in pendingHexes {
-            // O(1) set lookup instead of a database round trip
-            if alreadyExplored.contains(hexIndex) {
-                continue
+            if alreadyExplored.contains(hexIndex) { continue }
+
+            // 1. Insert the new hex
+            context.insert(ExploredHex(h3Index: hexIndex, resolution: data.resolution, regionID: data.regionID))
+            newHexIndices.append(hexIndex)
+
+            // 2. Update or create the region tracker using the in-memory cache
+            if let region = regionCache[data.regionID] {
+                region.addExploredHex(hexIndex)
             } else {
-                // 1. Save the brand new hex to SwiftData
-                let newHex = ExploredHex(h3Index: hexIndex, resolution: data.resolution, regionID: data.regionID)
-                    context.insert(newHex)
-                newHexIndices.append(hexIndex)
-
-                // 2. INCREMENT REGION PROGRESS
-                let regionIdToFind = data.regionID
-                let regionDescriptor = FetchDescriptor<RegionExploration>(
-                    predicate: #Predicate { $0.regionID == regionIdToFind }
+                print("✨ Discovered a brand new region with ID: \(data.regionID)")
+                let metadata  = RegionMetadataManager.shared.municipalities[data.regionID]
+                let newRegion = RegionExploration(
+                    regionID:   data.regionID,
+                    name:       metadata?.name ?? "Unknown Region",
+                    type:       "Municipality",
+                    totalHexes: OfflineDatabase.shared.getTotalHexes(for: data.regionID)
                 )
-
-                if let region = try? context.fetch(regionDescriptor).first {
-                    // The region tracker already exists, just add the new hex!
-                    region.addExploredHex(hexIndex)
-                } else {
-                    // 3. FIRST TIME DISCOVERY
-                    print("✨ Discovered a brand new region with ID: \(data.regionID)")
-
-                    // Look up the real name and Canton ID from our GeoJSON metadata
-                    let metadata = RegionMetadataManager.shared.municipalities[data.regionID]
-                    let regionName = metadata?.name ?? "Unknown Region"
-
-                    // Ask SQLite exactly how many hexes make up this municipality
-                    let totalHexes = OfflineDatabase.shared.getTotalHexes(for: data.regionID)
-
-                    // Create the progress tracker!
-                    let newRegion = RegionExploration(
-                        regionID: data.regionID,
-                        name: regionName,
-                        type: "Municipality",
-                        totalHexes: totalHexes
-                    )
-
-                    newRegion.addExploredHex(hexIndex)
-                    context.insert(newRegion)
-                }
+                newRegion.addExploredHex(hexIndex)
+                context.insert(newRegion)
+                regionCache[data.regionID] = newRegion  // cache for subsequent hexes in same region
             }
         }
 
