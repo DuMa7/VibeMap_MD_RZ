@@ -104,6 +104,14 @@ struct ContentView: View {
 
     /// Handle for the in-flight debounced centered-region lookup — cancelled when a newer coordinate arrives
     @State private var centeredRegionTask: Task<Void, Never>?
+
+    // MARK: - Canton Count Cache
+
+    /// cantonID → number of visited municipalities in that canton — O(1) HUD lookups
+    @State private var visitedCountPerCanton: [String: Int] = [:]
+
+    /// Total distinct cantons visited — cached to avoid O(N) compactMap on every render
+    @State private var cachedVisitedCantonCount: Int = 0
     
     // MARK: - Body
 
@@ -131,6 +139,7 @@ struct ContentView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 withAnimation { isLoading = false }
                 repairRegionTotals()
+                rebuildCantonCounts()
                 checkAchievements()
                 if !locationManager.isSessionActive {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -158,6 +167,10 @@ struct ContentView: View {
         // Re-check achievements whenever the user enters a new hex
         .onChange(of: exploredHexes.count) { _, _ in
             checkAchievements()
+        }
+        // Rebuild canton caches when a new municipality is discovered
+        .onChange(of: regions.count) { _, _ in
+            rebuildCantonCounts()
         }
         // Update crosshair state when the map stops panning
         .onChange(of: centerCoordinate) { _, newValue in
@@ -484,14 +497,10 @@ struct ContentView: View {
         if currentSpan >= 1.8  { return "\(regions.count) Towns" }
         
         if currentSpan >= 0.18 {
-            // Count municipalities visited in the currently visible canton
             let cantonID = layerManager.cantons.first(where: {
                 getPrimaryName(from: $0.name) == centeredCantonName
-            })?.id
-            let visitedInCanton = regions.filter {
-                RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID == cantonID
-            }.count
-            return "\(visitedInCanton) Towns"
+            })?.id ?? ""
+            return "\(visitedCountPerCanton[cantonID] ?? 0) Towns"
         }
         
         // Street level: show % of the active municipality explored
@@ -613,9 +622,7 @@ struct ContentView: View {
                         let cantonID = layerManager.cantons.first(where: {
                             getPrimaryName(from: $0.name) == centeredCantonName
                         })?.id
-                        let visitedInCanton = regions.filter {
-                            RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID == cantonID
-                        }.count
+                        let visitedInCanton = visitedCountPerCanton[cantonID ?? ""] ?? 0
                         let totalInCanton = RegionMetadataManager.shared.municipalities.values.filter {
                             $0.cantonID == cantonID
                         }.count
@@ -628,15 +635,12 @@ struct ContentView: View {
                         )
                         
                         // Country row — cantons visited vs Switzerland's 26
-                        let visitedCantons = Set(regions.compactMap {
-                            RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
-                        }).count
                         detailCard(
                             icon: "globe.europe.africa.fill",
                             title: "Switzerland",
                             subtitle: "Country",
-                            progressText: "\(visitedCantons) / 26 Cantons Visited",
-                            percentage: Double(visitedCantons) / 26.0
+                            progressText: "\(cachedVisitedCantonCount) / 26 Cantons Visited",
+                            percentage: Double(cachedVisitedCantonCount) / 26.0
                         )
                     }
                     .padding(.horizontal)
@@ -725,10 +729,7 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("National Discovery").font(.headline)
                                 
-                                let visitedCantons = Set(regions.compactMap {
-                                    RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
-                                }).count
-                                progressRow(title: "Cantons Visited", current: visitedCantons, total: 26)
+                                progressRow(title: "Cantons Visited", current: cachedVisitedCantonCount, total: 26)
                                 progressRow(
                                     title: "Municipalities Visited",
                                     current: regions.count,
@@ -756,10 +757,7 @@ struct ContentView: View {
                                     Text("Canton Passport")
                                         .font(.headline)
                                         .foregroundStyle(.primary)
-                                    let visitedC = Set(regions.compactMap {
-                                        RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
-                                    }).count
-                                    Text("\(visitedC) / 26 cantons explored")
+                                    Text("\(cachedVisitedCantonCount) / 26 cantons explored")
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -849,8 +847,23 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Canton Count Cache
+
+    /// Rebuilds canton visit counts in one O(N) pass over regions.
+    /// Called on appear and whenever the visited-region count changes.
+    private func rebuildCantonCounts() {
+        var countPerCanton = [String: Int]()
+        for region in regions {
+            if let cantonID = RegionMetadataManager.shared.municipalities[region.regionID]?.cantonID {
+                countPerCanton[cantonID, default: 0] += 1
+            }
+        }
+        visitedCountPerCanton    = countPerCanton
+        cachedVisitedCantonCount = countPerCanton.count
+    }
+
     // MARK: - Achievement Logic
-    
+
     /// Compares current unlocked achievements against persisted titles from previous launches.
     /// Newly unlocked achievements are queued for banner display one at a time.
     private func checkAchievements() {
