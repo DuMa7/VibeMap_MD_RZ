@@ -22,6 +22,9 @@ struct MapView: View {
     /// Fast lookup for region colour — avoids O(N) scan per visible municipality per render
     @State private var regionLookup: [String: RegionExploration] = [:]
 
+    /// Handle for the in-flight debounced outline rebuild — cancelled when a newer change arrives
+    @State private var outlineTask: Task<Void, Never>?
+
     var exploredHexes: [ExploredHex]
     var regions: [RegionExploration]
     var layerManager: MapLayerManager
@@ -93,17 +96,26 @@ struct MapView: View {
         let allIndices  = hexes.map { $0.h3Index }
         let res9Indices = hexes.filter { $0.resolution == 9 }.map { $0.h3Index }
 
-        Task {
-            // Run the heavy O(N) merge on a background thread, then update @State
-            // back on the main actor (inherited by the outer Task).
+        outlineTask?.cancel()
+        outlineTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 s debounce
+            } catch {
+                return // cancelled before debounce elapsed
+            }
+
             async let all  = Task.detached(priority: .userInitiated) {
                 HexMerger.mergeHexOutlines(allIndices)
             }.value
             async let res9 = Task.detached(priority: .userInitiated) {
                 HexMerger.mergeHexOutlines(res9Indices)
             }.value
-            hexOutlines  = await all
-            res9Outlines = await res9
+            let allResult  = await all
+            let res9Result = await res9
+
+            guard !Task.isCancelled else { return }
+            hexOutlines  = allResult
+            res9Outlines = res9Result
             print("📐 Merged outlines: \(hexOutlines.count) rings from \(allIndices.count) hexes")
         }
     }
