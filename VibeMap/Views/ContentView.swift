@@ -287,8 +287,8 @@ struct ContentView: View {
             VStack {
                 Spacer()
                 HStack(alignment: .bottom) {
-                    // Left card: navigation controls (recenter + layers)
-                    VStack(spacing: 0) {
+                    // Left buttons: recenter + layers (separate floating circles)
+                    VStack(spacing: 12) {
                         Button {
                             if let userLocation = locationManager.userLocation {
                                 withAnimation(.easeInOut(duration: 0.5)) {
@@ -300,14 +300,15 @@ struct ContentView: View {
                             }
                         } label: {
                             Image(systemName: "location.fill")
-                                .font(.title3)
+                                .font(.system(size: 17, weight: .semibold))
                                 .foregroundStyle(.blue)
-                                .frame(width: 50, height: 50)
+                                .frame(width: 52, height: 52)
+                                .background { Circle().fill(.ultraThinMaterial) }
+                                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 0.5))
+                                .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
                         }
                         .disabled(locationManager.userLocation == nil)
                         .opacity(locationManager.userLocation == nil ? 0.4 : 1.0)
-
-                        Divider().padding(.horizontal, 10)
 
                         Button {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
@@ -315,15 +316,20 @@ struct ContentView: View {
                             }
                         } label: {
                             Image(systemName: "square.3.layers.3d")
-                                .font(.title3)
-                                .foregroundStyle(showLayerPanel ? .orange : .primary)
-                                .frame(width: 50, height: 50)
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(showLayerPanel ? .white : .primary)
+                                .frame(width: 52, height: 52)
+                                .background {
+                                    if showLayerPanel {
+                                        Circle().fill(Color.orange)
+                                    } else {
+                                        Circle().fill(.ultraThinMaterial)
+                                    }
+                                }
+                                .overlay(Circle().strokeBorder(showLayerPanel ? Color.orange.opacity(0.5) : .white.opacity(0.25), lineWidth: 0.5))
+                                .shadow(color: showLayerPanel ? Color.orange.opacity(0.4) : .black.opacity(0.18), radius: 8, x: 0, y: 4)
                         }
                     }
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
-                    .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
 
                     Spacer()
 
