@@ -101,6 +101,9 @@ struct ContentView: View {
 
     /// Detects the user's current municipality in real time — kept for future use but not driving the pill directly
     private let liveDetector = LiveLocationDetector.shared
+
+    /// Handle for the in-flight debounced centered-region lookup — cancelled when a newer coordinate arrives
+    @State private var centeredRegionTask: Task<Void, Never>?
     
     // MARK: - Body
 
@@ -505,26 +508,37 @@ struct ContentView: View {
     /// Called on every location update (walking) and every map pan end (browsing).
     /// Runs H3 conversion and SQLite lookup off the main thread to avoid UI stutters.
     private func updateCenteredRegion(coordinate: CLLocationCoordinate2D) {
-        Task {
+        centeredRegionTask?.cancel()
+        centeredRegionTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000) // 250 ms debounce
+            } catch {
+                return // cancelled before debounce elapsed
+            }
+
             // H3 index generation — off main thread to avoid blocking map gestures
             let (hex10, hex9) = await Task.detached(priority: .userInitiated) {
                 let latRads = coordinate.latitude * .pi / 180.0
                 let lonRads = coordinate.longitude * .pi / 180.0
                 var coord = LatLng(lat: latRads, lng: lonRads)
-                
+
                 var h3Index10: H3Index = 0
                 var h3Index9: H3Index = 0
                 latLngToCell(&coord, Int32(10), &h3Index10)
                 latLngToCell(&coord, Int32(9), &h3Index9)
-                
+
                 return (String(h3Index10, radix: 16), String(h3Index9, radix: 16))
             }.value
-            
+
+            guard !Task.isCancelled else { return }
+
             // SQLite region lookup — also off main thread via OfflineDatabase's serial queue
             let regionData = await Task.detached(priority: .userInitiated) {
                 OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9)
             }.value
-            
+
+            guard !Task.isCancelled else { return }
+
             // All @State mutations must happen on the main thread
             await MainActor.run {
                 guard let regionData else {
@@ -533,20 +547,20 @@ struct ContentView: View {
                     centeredCantonName = "Unknown Canton"
                     return
                 }
-                
+
                 centeredRegionID = regionData.regionID
-                
+
                 guard let metadata = RegionMetadataManager.shared.municipalities[regionData.regionID] else {
                     return
                 }
-                
+
                 centeredMunicipalityName = getPrimaryName(from: metadata.name)
-                
+
                 // Look up total hexes for the Location Details progress bar
                 centeredMuniTotalHexes = regions.first(where: {
                     $0.regionID == regionData.regionID
                 })?.totalHexes ?? 0
-                
+
                 if let canton = layerManager.cantons.first(where: { $0.id == metadata.cantonID }) {
                     centeredCantonName = getPrimaryName(from: canton.name)
                 } else {
