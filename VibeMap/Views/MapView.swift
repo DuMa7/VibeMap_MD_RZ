@@ -16,6 +16,12 @@ struct MapView: View {
     /// Canton IDs of all visited regions — cached to avoid recomputing on every render pass
     @State private var cachedCantonIDs: Set<String> = []
 
+    /// Region IDs of all visited municipalities — O(1) filter for the municipality zoom layer
+    @State private var cachedMunicipalityIDs: Set<String> = []
+
+    /// Fast lookup for region colour — avoids O(N) scan per visible municipality per render
+    @State private var regionLookup: [String: RegionExploration] = [:]
+
     var exploredHexes: [ExploredHex]
     var regions: [RegionExploration]
     var layerManager: MapLayerManager
@@ -36,9 +42,7 @@ struct MapView: View {
                         }
                     }
                 } else if currentSpan >= 0.2 {
-                    ForEach(layerManager.municipalities.filter { muni in
-                        regions.contains(where: { $0.regionID == muni.id })
-                    }) { muni in
+                    ForEach(layerManager.municipalities.filter { cachedMunicipalityIDs.contains($0.id) }) { muni in
                         ForEach(0..<muni.polygons.count, id: \.self) { i in
                             MapPolygon(coordinates: muni.polygons[i])
                                 .foregroundStyle(colorForRegion(muni.id))
@@ -68,12 +72,14 @@ struct MapView: View {
             centerCoordinate = context.region.center
         }
         .onAppear {
-            cachedCantonIDs = buildCantonIDs()
+            rebuildRegionCaches()
             rebuildOutlines(exploredHexes)
         }
         .onChange(of: exploredHexes) { _, newHexes in
-            cachedCantonIDs = buildCantonIDs()
             rebuildOutlines(newHexes)
+        }
+        .onChange(of: regions) { _, _ in
+            rebuildRegionCaches()
         }
     }
 
@@ -102,12 +108,25 @@ struct MapView: View {
         }
     }
 
-    // MARK: - Canton Cache
+    // MARK: - Region Caches
 
-    private func buildCantonIDs() -> Set<String> {
-        Set(regions.compactMap { region in
-            RegionMetadataManager.shared.municipalities[region.regionID]?.cantonID
-        })
+    /// Rebuilds all three region-derived caches in one pass over `regions`.
+    /// Called on appear and on every regions change — NOT on exploredHexes change,
+    /// since canton/municipality membership only changes when a new region is discovered.
+    private func rebuildRegionCaches() {
+        var cantonIDs    = Set<String>()
+        var muniIDs      = Set<String>()
+        var lookup       = [String: RegionExploration](minimumCapacity: regions.count)
+        for region in regions {
+            muniIDs.insert(region.regionID)
+            lookup[region.regionID] = region
+            if let cantonID = RegionMetadataManager.shared.municipalities[region.regionID]?.cantonID {
+                cantonIDs.insert(cantonID)
+            }
+        }
+        cachedCantonIDs      = cantonIDs
+        cachedMunicipalityIDs = muniIDs
+        regionLookup         = lookup
     }
 
     // MARK: - Region Color
@@ -115,7 +134,7 @@ struct MapView: View {
     /// Returns an opacity-scaled orange style for a region based on its exploration percentage.
     /// Regions with 0 totalHexes return clear to avoid division by zero.
     private func colorForRegion(_ id: String) -> AnyShapeStyle {
-        guard let region = regions.first(where: { $0.regionID == id }), region.totalHexes > 0 else {
+        guard let region = regionLookup[id], region.totalHexes > 0 else {
             return AnyShapeStyle(.clear)
         }
         let percentage = Double(region.exploredHexes.count) / Double(region.totalHexes)
