@@ -216,10 +216,11 @@ struct ContentView: View {
                 Button(action: { showSettings.toggle() }) {
                     Image(systemName: "gearshape.fill")
                         .foregroundStyle(.primary)
-                        .padding(10)
+                        .padding(11)
                         .background(.ultraThinMaterial)
                         .clipShape(Circle())
-                        .shadow(radius: 4)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
                 }
                 
                 Spacer()
@@ -261,7 +262,8 @@ struct ContentView: View {
                     .padding(.vertical, 10)
                     .background(.ultraThinMaterial)
                     .clipShape(Capsule())
-                    .shadow(radius: 5)
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
                     .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentZoomLabel)
                 }
                 
@@ -271,45 +273,42 @@ struct ContentView: View {
                 Button(action: { withAnimation { showStats = true } }) {
                     Image(systemName: "trophy.fill")
                         .foregroundStyle(.primary)
-                        .padding(10)
+                        .padding(11)
                         .background(.ultraThinMaterial)
                         .clipShape(Circle())
-                        .shadow(radius: 4)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
                 }
             }
             .padding(.horizontal)
             .padding(.top, 10)
             
-            // MARK: Bottom Controls — Recenter + Layers + Session Toggle
+            // MARK: Bottom Controls — Floating Cards
             VStack {
                 Spacer()
                 HStack(alignment: .bottom) {
-                    // Recenter
-                    Button {
-                        if let userLocation = locationManager.userLocation {
-                            withAnimation(.easeInOut(duration: 0.5)) {
-                                position = .region(MKCoordinateRegion(
-                                    center: userLocation,
-                                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                                ))
+                    // Left card: navigation controls (recenter + layers)
+                    VStack(spacing: 0) {
+                        Button {
+                            if let userLocation = locationManager.userLocation {
+                                withAnimation(.easeInOut(duration: 0.5)) {
+                                    position = .region(MKCoordinateRegion(
+                                        center: userLocation,
+                                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                                    ))
+                                }
                             }
+                        } label: {
+                            Image(systemName: "location.fill")
+                                .font(.title3)
+                                .foregroundStyle(.blue)
+                                .frame(width: 50, height: 50)
                         }
-                    } label: {
-                        Image(systemName: "location.fill")
-                            .font(.title3)
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .background(.blue)
-                            .clipShape(Circle())
-                            .shadow(radius: 4)
-                    }
-                    .disabled(locationManager.userLocation == nil)
-                    .opacity(locationManager.userLocation == nil ? 0.5 : 1.0)
+                        .disabled(locationManager.userLocation == nil)
+                        .opacity(locationManager.userLocation == nil ? 0.4 : 1.0)
 
-                    Spacer()
+                        Divider().padding(.horizontal, 10)
 
-                    VStack(alignment: .trailing, spacing: 12) {
-                        // Layers button
                         Button {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
                                 showLayerPanel.toggle()
@@ -317,16 +316,19 @@ struct ContentView: View {
                         } label: {
                             Image(systemName: "square.3.layers.3d")
                                 .font(.title3)
-                                .foregroundStyle(.white)
-                                .frame(width: 44, height: 44)
-                                .background(showLayerPanel ? Color.orange : Color.gray.opacity(0.8))
-                                .clipShape(Circle())
-                                .shadow(radius: 4)
+                                .foregroundStyle(showLayerPanel ? .orange : .primary)
+                                .frame(width: 50, height: 50)
                         }
-
-                        // Session toggle
-                        sessionToggleButton
                     }
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.15), radius: 8, x: 0, y: 4)
+
+                    Spacer()
+
+                    // Right card: session toggle
+                    sessionToggleButton
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 40)
@@ -342,12 +344,12 @@ struct ContentView: View {
                             showLayerPanel = false
                         }
                     }
-                    .overlay(alignment: .bottomTrailing) {
+                    .overlay(alignment: .bottomLeading) {
                         LayerPanelView(settings: layerSettings)
-                            .padding(.trailing, 16)
+                            .padding(.leading, 16)
                             .padding(.bottom, 148)
                     }
-                    .transition(.opacity)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
                     .zIndex(4)
             }
 
