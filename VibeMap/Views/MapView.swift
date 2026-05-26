@@ -10,7 +10,9 @@ struct MapView: View {
     /// Replaces N individual MapPolygon views with a handful of cluster outlines.
     @State private var hexOutlines: [[CLLocationCoordinate2D]] = []
 
-    /// Merged outline polygons for res-9 hexes only — used at intermediate zoom levels.
+    /// Merged outline polygons for all explored hexes promoted to res-9 — used at intermediate zoom levels.
+    /// Built by converting every res-10 hex to its res-9 parent, then merging. Gives complete
+    /// coarse coverage at mid-zoom rather than just the sparse boundary-fallback hexes.
     @State private var res9Outlines: [[CLLocationCoordinate2D]] = []
 
     /// Canton IDs of all visited regions — cached to avoid recomputing on every render pass
@@ -95,12 +97,19 @@ struct MapView: View {
     // MARK: - Outline Builder
 
     /// Merges all explored hexes into cluster outlines off the main thread.
-    /// O(N) in hex count. Two separate merges: all hexes + res-9 only.
+    /// O(N) in hex count. Two separate merges: res-10 (street level) + res-9 (mid-zoom).
     private func rebuildOutlines(_ hexes: [ExploredHex]) {
         // Extract Strings (Sendable) before the detached task — ExploredHex is a
         // SwiftData @Model class and cannot be safely captured in a @Sendable closure.
-        let allIndices  = hexes.map { $0.h3Index }
-        let res9Indices = hexes.filter { $0.resolution == 9 }.map { $0.h3Index }
+        let allIndices = hexes.map { $0.h3Index }
+
+        // Promote every res-10 hex to its res-9 parent so the mid-zoom layer shows complete
+        // coverage. Without this, res9Outlines would only contain the sparse set of hexes
+        // that were stored at res-9 directly (boundary fallbacks), making mid-zoom look broken.
+        let res9Indices = Array(Set(hexes.compactMap { hex -> String? in
+            if hex.resolution == 9 { return hex.h3Index }
+            return H3Wrapper.cellToParent(h3Index: hex.h3Index, parentRes: 9)
+        }))
 
         outlineTask?.cancel()
         outlineTask = Task {
