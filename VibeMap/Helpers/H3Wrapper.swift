@@ -58,4 +58,16 @@ struct H3Wrapper {
         guard let parent = cellToParent(index: index, parentRes: parentRes) else { return nil }
         return String(parent, radix: 16)
     }
+
+    /// Returns the geographic centroid of an H3 cell by averaging its boundary vertices.
+    /// For a convex hexagon the centroid equals the vertex average exactly, so no approximation
+    /// is needed. Used for viewport filtering before passing indices to HexMerger.
+    static func cellCenter(h3Index: String) -> CLLocationCoordinate2D? {
+        let verts = getVertices(for: h3Index)
+        guard !verts.isEmpty else { return nil }
+        return CLLocationCoordinate2D(
+            latitude:  verts.map { $0.latitude  }.reduce(0, +) / Double(verts.count),
+            longitude: verts.map { $0.longitude }.reduce(0, +) / Double(verts.count)
+        )
+    }
 }

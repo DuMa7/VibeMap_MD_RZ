@@ -92,31 +92,47 @@ struct MapView: View {
         .onChange(of: regions) { _, _ in
             rebuildRegionCaches()
         }
+        // When the user pans while at street zoom the set of visible hexes changes,
+        // so rebuild the outline for the new viewport position.
+        .onChange(of: centerCoordinate) { _, _ in
+            if currentSpan < 0.02 {
+                rebuildOutlines(exploredHexes)
+            }
+        }
     }
 
     // MARK: - Outline Builder
 
-    /// Merges all explored hexes into cluster outlines off the main thread.
-    /// O(N) in hex count. Two separate merges: res-10 (street level) + res-9 (mid-zoom).
+    /// Merges explored hexes into cluster outlines off the main thread.
+    /// At street zoom the input is restricted to the visible viewport to keep
+    /// HexMerger's O(N) work proportional to what's on screen, not the full history.
     private func rebuildOutlines(_ hexes: [ExploredHex]) {
-        // Extract Strings (Sendable) before the detached task — ExploredHex is a
-        // SwiftData @Model class and cannot be safely captured in a @Sendable closure.
-        let allIndices = hexes.map { $0.h3Index }
+        // At street zoom, cull to the visible viewport before extracting index strings.
+        // At wider zooms, pass everything — municipality/canton layers are GeoJSON-driven
+        // and don't go through HexMerger, so no culling is needed there.
+        let allIndices: [String]
+        if currentSpan < 0.02, let center = centerCoordinate {
+            allIndices = viewportFilteredIndices(from: hexes, center: center, span: currentSpan)
+        } else {
+            allIndices = hexes.map { $0.h3Index }
+        }
 
-        // Promote every res-10 hex to its res-9 parent so the mid-zoom layer shows complete
-        // coverage. Without this, res9Outlines would only contain the sparse set of hexes
-        // that were stored at res-9 directly (boundary fallbacks), making mid-zoom look broken.
+        // res-9 covers a much wider area at mid-zoom; no viewport culling needed since
+        // the promoted set is already ~7× smaller than the full res-10 set.
         let res9Indices = Array(Set(hexes.compactMap { hex -> String? in
             if hex.resolution == 9 { return hex.h3Index }
             return H3Wrapper.cellToParent(h3Index: hex.h3Index, parentRes: 9)
         }))
 
+        // Adaptive debounce: after viewport culling, allIndices is small during live
+        // exploration at street zoom, so 300 ms feels responsive. The longer debounce
+        // protects the CPU when processing a large viewport or the full res-9 set.
+        let debounceNs: UInt64 = allIndices.count < 500 ? 300_000_000 : 1_500_000_000
+
         outlineTask?.cancel()
         outlineTask = Task {
             do {
-                // 1.5 s debounce: HexMerger is O(N hex count) and can take >1 s on large datasets.
-                // Waiting for the user to finish panning avoids redundant merges mid-gesture.
-                try await Task.sleep(nanoseconds: 1_500_000_000)
+                try await Task.sleep(nanoseconds: debounceNs)
             } catch {
                 return // cancelled before debounce elapsed — a newer change arrived
             }
@@ -133,7 +149,30 @@ struct MapView: View {
             guard !Task.isCancelled else { return }
             hexOutlines  = allResult
             res9Outlines = res9Result
-            print("📐 Merged outlines: \(hexOutlines.count) rings from \(allIndices.count) hexes")
+            print("📐 Merged outlines: \(hexOutlines.count) rings from \(allIndices.count) visible hexes (\(hexes.count) total)")
+        }
+    }
+
+    /// Returns the h3Index strings of hexes whose centroid falls within the viewport bounding box.
+    /// A 2× buffer beyond the visible span lets the user pan slightly without triggering a rebuild.
+    private func viewportFilteredIndices(
+        from hexes: [ExploredHex],
+        center: CLLocationCoordinate2D,
+        span: Double
+    ) -> [String] {
+        let buffer = span * 2.0
+        let minLat = center.latitude  - buffer
+        let maxLat = center.latitude  + buffer
+        let minLon = center.longitude - buffer
+        let maxLon = center.longitude + buffer
+
+        return hexes.compactMap { hex in
+            guard let c = H3Wrapper.cellCenter(h3Index: hex.h3Index) else {
+                return hex.h3Index // include if centroid is unavailable — safe fallback
+            }
+            guard c.latitude  >= minLat, c.latitude  <= maxLat,
+                  c.longitude >= minLon, c.longitude <= maxLon else { return nil }
+            return hex.h3Index
         }
     }
 
