@@ -752,6 +752,8 @@ struct ContentView: View {
                             // Canton Passport entry point
                         Button {
                             withAnimation { showStats = false }
+                            // Delay matches the stats sheet's dismiss animation — presenting
+                            // a new sheet while another is mid-dismiss crashes on iOS 16.
                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                                 showPassport = true
                             }
@@ -807,7 +809,9 @@ struct ContentView: View {
     
     // MARK: - Stats Helpers
     
-    /// Estimates explored area in km² — each hex at resolution 10 covers ~0.015 km²
+    /// Estimates explored area in km² using the H3 resolution-10 average cell area
+    /// of ~0.015 km² (~15,047 m²). This is a global average; actual Swiss cell sizes
+    /// vary slightly by latitude but the approximation is accurate within ~2%.
     private func calculateArea() -> String {
         let sqKm = Double(exploredHexes.count) * 0.015
         return String(format: "%.2f", sqKm)

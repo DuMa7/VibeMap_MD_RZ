@@ -19,6 +19,7 @@ enum HexMerger {
             let to: CoordKey
         }
 
+        // Each hex contributes 6 directed edges; ×7 leaves headroom for H3's shared-boundary topology.
         var edgeSet = Set<DirectedEdge>(minimumCapacity: h3Indices.count * 7)
         for h3Index in h3Indices {
             let verts = H3Wrapper.getVertices(for: h3Index)
@@ -31,12 +32,15 @@ enum HexMerger {
             }
         }
 
-        // Boundary: A→B is on the outline iff B→A is absent.
+        // Boundary edges are those with no matching reverse edge — interior shared edges cancel out.
+        // The adjacency dict maps each boundary vertex to the next one in winding order.
         var adjacency = [CoordKey: CoordKey](minimumCapacity: edgeSet.count / 3)
         for edge in edgeSet where !edgeSet.contains(DirectedEdge(from: edge.to, to: edge.from)) {
             adjacency[edge.from] = edge.to
         }
 
+        // Walk every unvisited start node to completion. Each walk produces one closed ring.
+        // Multiple rings arise from non-contiguous clusters or interior holes.
         var rings: [[CLLocationCoordinate2D]] = []
         var visited = Set<CoordKey>(minimumCapacity: adjacency.count)
         for start in adjacency.keys where !visited.contains(start) {

@@ -64,8 +64,11 @@ extension UTType {
 
 // MARK: - GPX Parser
 
-/// SAX-based GPX XML parser. Handles trkpt, wpt, rtept elements across multiple
-/// tracks and segments. Returns a GPXFile with all extracted points.
+/// SAX-based (streaming) GPX XML parser. Handles trkpt, wpt, rtept elements across
+/// multiple tracks and segments. Returns a GPXFile with all extracted points.
+///
+/// SAX is used instead of a DOM parser to avoid loading the full XML tree into memory —
+/// Strava and Garmin exports can contain tens of thousands of track points per file.
 final class GPXParser: NSObject, XMLParserDelegate {
 
     private var points: [GPXPoint] = []
@@ -82,6 +85,9 @@ final class GPXParser: NSObject, XMLParserDelegate {
 
     private static let pointTags: Set<String> = ["trkpt", "wpt", "rtept"]
 
+    // Two formatters because GPX producers disagree on fractional seconds:
+    // Garmin/AllTrails include them ("2024-01-15T10:30:00.000Z"), older Strava does not.
+    // Try the stricter format first; fall back to the lenient one on failure.
     private lazy var isoFull: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -219,7 +225,9 @@ final class GPXImporter {
                 }
 
                 let activeHex = regionData.matchedHex
-                // Skip consecutive duplicates (dense GPS tracks) and within-batch duplicates
+                // lastHex catches consecutive duplicates cheaply (dense GPS tracks from slow movement).
+                // seenIndices catches non-consecutive revisits within the same import batch.
+                // Together they avoid storing multiple entries for the same hex in pendingHexes.
                 guard activeHex != lastHex, !seenIndices.contains(activeHex) else {
                     lastHex = activeHex
                     continue

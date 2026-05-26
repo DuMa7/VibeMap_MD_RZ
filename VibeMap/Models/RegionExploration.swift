@@ -11,9 +11,14 @@ class RegionExploration {
     var firstVisited: Date
     var lastVisited: Date
     
-    // Transient: not persisted, rebuilt from exploredHexes on first access
+    // SwiftData cannot persist Set<String>, so the set is derived from the array on demand.
+    // @Transient tells SwiftData to skip this field entirely — it starts nil on every fetch
+    // and is lazily populated from exploredHexes on first access.
+    //
+    // INVARIANT: all mutations to exploredHexes MUST go through addExploredHex to keep
+    // _exploredSet in sync. Direct appends to exploredHexes bypass the O(1) dedup check.
     @Transient private var _exploredSet: Set<String>? = nil
-    
+
     private var exploredSet: Set<String> {
         if _exploredSet == nil {
             _exploredSet = Set(exploredHexes)
@@ -32,7 +37,9 @@ class RegionExploration {
     }
     
     var explorationPercentage: Double {
-        // If totalHexes is corrupt, re-query SQLite and repair inline
+        // totalHexes can be 0 if the region was written before OfflineDatabase finished opening
+        // on first launch (a startup race condition). Rather than a migration, we repair inline:
+        // the fix is cheap, self-healing, and requires no schema version bump.
         if totalHexes == 0 {
             let repaired = OfflineDatabase.shared.getTotalHexes(for: regionID)
             if repaired > 0 {

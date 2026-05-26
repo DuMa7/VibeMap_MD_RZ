@@ -1,8 +1,22 @@
 import Foundation
 import SwiftData
 
+// Two complementary models represent exploration data at different granularities:
+//
+//   ExploredHex — one record per H3 cell visited. Used for map outline rendering,
+//                 achievement hex counts, and the in-memory suppression set that
+//                 LocationManager builds at session start.
+//
+//   LocationPoint — raw GPS coordinates (currently unused; reserved for a future
+//                   breadcrumb trail or route replay feature).
+//
+// RegionExploration (defined separately) aggregates hexes at the municipality level
+// for progress stats and canton-level rollups.
+
 @Model
 class ExploredHex {
+    // Unique constraint enforced by SwiftData — duplicate inserts throw at the model layer.
+    // LocationManager's exploredHexSet prevents ever reaching that path during normal use.
     @Attribute(.unique) var h3Index: String
     var resolution: Int
     var visitCount: Int = 1
@@ -25,6 +39,8 @@ class ExploredHex {
     }
 }
 
+// Currently unused — the app records hexes rather than raw coordinates.
+// Kept for a potential future breadcrumb trail or route replay feature.
 @Model
 class LocationPoint {
     var latitude: Double

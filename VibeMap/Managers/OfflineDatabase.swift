@@ -1,11 +1,19 @@
 import Foundation
 import SQLite3
 
+// swiss_index.sqlite is a read-only lookup table bundled in the app bundle.
+// It maps H3 hex indices (resolutions 9 and 10) to Swiss municipality IDs,
+// allowing fully offline region identification with no network dependency.
+//
+// Hex_Map schema: h3_index TEXT, region_id TEXT, resolution INTEGER
+//
+// Statements are pre-compiled once at init and reused across every GPS fix,
+// which is critical because getRegionData is called on every location update.
 class OfflineDatabase {
     static let shared = OfflineDatabase()
     private var db: OpaquePointer?
-    
-    // Pre-compiled statements — prepared once, reused forever
+
+    // Prepared once, reset and rebound on each call — avoids repeated SQL compilation overhead.
     private var regionStatement: OpaquePointer?
     private var countStatement: OpaquePointer?
     
@@ -28,7 +36,10 @@ class OfflineDatabase {
     }
     
     private func prepareStatements() {
-        // Statement 1: region lookup by hex index
+        // The OR query accepts both res-10 (primary) and res-9 (fallback) hex strings.
+        // LIMIT 1 is safe because a given coordinate maps to exactly one res-10 and one
+        // res-9 cell — both share the same region_id, so whichever row is returned first
+        // yields the correct municipality regardless of resolution.
         let regionQuery = "SELECT h3_index, region_id, resolution FROM Hex_Map WHERE h3_index = ? OR h3_index = ? LIMIT 1;"
         if sqlite3_prepare_v2(db, regionQuery, -1, &regionStatement, nil) != SQLITE_OK {
             print("❌ Failed to prepare region statement")

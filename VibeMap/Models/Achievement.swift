@@ -15,11 +15,16 @@ struct Achievement: Identifiable {
     let icon: String
     let color: Color
     
-    // The condition to unlock. Inputs: (hexCount, cityCount)
+    // Closure over an enum-based approach: criteria can freely mix hexCount and cityCount,
+    // and future achievements with compound conditions (e.g. "50 hexes AND 3 cities") require
+    // no additional cases or switch boilerplate.
+    // Inputs are always (totalHexCount, visitedMunicipalityCount).
     let criteria: (Int, Int) -> Bool
 }
 
-// Static definition of all available achievements
+// Achievement.id is a new UUID on every launch, so persistence uses title strings
+// (see ContentView.unlockedAchievementTitles). Titles must remain stable across releases —
+// renaming an achievement here will cause it to re-trigger for existing users.
 struct AchievementLibrary {
     static let all: [Achievement] = [
         Achievement(
@@ -43,7 +48,6 @@ struct AchievementLibrary {
             color: .purple,
             criteria: { hexes, _ in hexes >= 500 }
         ),
-        // NEW: Advanced Hex Achievement
         Achievement(
             title: "Swiss Clockwork",
             description: "Meticulously explore 2,000 hexes",
@@ -65,7 +69,6 @@ struct AchievementLibrary {
             color: .red,
             criteria: { _, cities in cities >= 3 }
         ),
-        // NEW: Advanced City Achievement
         Achievement(
             title: "Canton Hopper",
             description: "Visit 10 different municipalities",
@@ -82,7 +85,6 @@ struct AchievementLibrary {
 }
 
 // MARK: - Visual Component
-// This is the missing piece that ContentView was looking for!
 struct AchievementRow: View {
     let achievement: Achievement
     

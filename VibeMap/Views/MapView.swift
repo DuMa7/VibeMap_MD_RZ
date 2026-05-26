@@ -32,6 +32,12 @@ struct MapView: View {
     var userLocation: CLLocationCoordinate2D?
 
     var body: some View {
+        // Zoom threshold ladder (latitudeDelta of the visible region):
+        //   ≥ 10.0        — world/continent scale — nothing drawn
+        //   2.0 – 10.0   — canton polygons
+        //   0.2 – 2.0    — municipality fill polygons (opacity scales with exploration %)
+        //   0.02 – 0.2   — merged res-9 hex outlines (~city-block scale)
+        //   < 0.02       — full res-10 hex outlines (street level, ~15 m cells)
         Map(position: $position) {
             UserAnnotation()
 
@@ -99,9 +105,11 @@ struct MapView: View {
         outlineTask?.cancel()
         outlineTask = Task {
             do {
-                try await Task.sleep(nanoseconds: 1_500_000_000) // 1.5 s debounce
+                // 1.5 s debounce: HexMerger is O(N hex count) and can take >1 s on large datasets.
+                // Waiting for the user to finish panning avoids redundant merges mid-gesture.
+                try await Task.sleep(nanoseconds: 1_500_000_000)
             } catch {
-                return // cancelled before debounce elapsed
+                return // cancelled before debounce elapsed — a newer change arrived
             }
 
             async let all  = Task.detached(priority: .userInitiated) {
@@ -154,6 +162,9 @@ struct MapView: View {
     }
 }
 
+// @retroactive conformance: CLLocationCoordinate2D (CoreLocation) to Equatable (stdlib).
+// Required so SwiftUI's onChange(of:) can diff camera positions that embed coordinates.
+// The @retroactive attribute suppresses the "conformance to external protocol" compiler warning.
 extension CLLocationCoordinate2D: @retroactive Equatable {
     public static func == (lhs: CLLocationCoordinate2D, rhs: CLLocationCoordinate2D) -> Bool {
         lhs.latitude == rhs.latitude && lhs.longitude == rhs.longitude

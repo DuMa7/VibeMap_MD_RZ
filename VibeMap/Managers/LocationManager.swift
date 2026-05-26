@@ -17,10 +17,16 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     /// GPS only records hexes during an active session.
     var isSessionActive: Bool = false
 
+    // Two-layer deduplication to minimise SwiftData and SQLite traffic:
+    //   1. lastSavedHex  — cheapest check: skip if still in the same hex as the previous update
+    //   2. exploredHexSet — O(1) full-history check: skip hexes recorded in any past session
+    //
+    // pendingHexes is a dict rather than an array so writing the same hex twice within one
+    // batch is a silent no-op (dict insert overwrites the existing entry).
     private var lastSavedHex: String?
     private var pendingHexes: [String: (resolution: Int, regionID: String)] = [:]
 
-    // Already-explored suppression (6.3): O(1) set built at session start.
+    // Populated from SwiftData at session start; cleared at session end.
     // Hexes in this set skip SQLite → SwiftData entirely on subsequent visits.
     private var exploredHexSet: Set<String> = []
 
@@ -219,7 +225,11 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         guard let location = locations.last else { return }
 
         let locationAge = abs(location.timestamp.timeIntervalSinceNow)
+        // Reject fixes older than 10 s — stale cached positions (e.g. from a cold GPS start)
+        // can map to the wrong hex and produce phantom exploration records.
         guard locationAge < 10 else { return }
+        // Negative accuracy = invalid fix; >100 m is too imprecise to reliably resolve a
+        // res-10 hex (~15 m edge length). Tighter than Apple's default to reduce false positives.
         guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else { return }
 
         userLocation = location.coordinate
@@ -231,16 +241,18 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         let lonRads = location.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
         
-        // 1. Generate both Res 10 and Res 9 indices natively in C
+        // Generate both res-10 (~15 m² cells, primary) and res-9 (~100 m² cells, fallback).
+        // The offline database was built at res-10 but some boundary hexes are only indexed
+        // at res-9; passing both lets OfflineDatabase return whichever it finds first.
         var h3Index10: H3Index = 0
         var h3Index9: H3Index = 0
         latLngToCell(&coord, Int32(10), &h3Index10)
         latLngToCell(&coord, Int32(9), &h3Index9)
-        
+
         let hex10 = String(h3Index10, radix: 16)
         let hex9 = String(h3Index9, radix: 16)
-        
-        // 2. Query the SQLite database natively (NO NETWORK!)
+
+        // SQLite lookup is synchronous but takes <1 ms on the bundled database (no network)
         if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
             let activeHex = regionData.matchedHex
 
@@ -257,6 +269,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             lastSavedHex = activeHex
             pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
 
+            // Foreground: flush every new hex immediately so the map updates in real time.
+            // Background: flush immediately too — background execution time is limited and
+            // we can't predict when the next didUpdateLocations call will arrive.
             if isInForeground {
                 if pendingHexes.count >= 1 { flushPendingData() }
             } else {
@@ -269,6 +284,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         print("❌ Location error: \(error.localizedDescription)")
     }
     
+    // CLVisit events fire when CoreLocation detects the user has arrived at or departed from
+    // a significant place. They are delivered even when the app is not running in the foreground,
+    // making them useful for passively catching hex transitions that occur outside active sessions.
     func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
         userLocation = visit.coordinate
 
