@@ -37,18 +37,20 @@ struct GarminSyncResult {
     let newHexCount: Int
     let newRegionCount: Int
     let workoutsProcessed: Int
+    /// How many of the processed workouts had an HKWorkoutRoute attached.
+    /// If this is 0 while workoutsProcessed > 0, Garmin Connect is not syncing
+    /// GPS route data to HealthKit — the user needs to export GPX files instead.
+    let workoutsWithRoutes: Int
 }
 
 // MARK: - Errors
 
 enum HealthKitError: LocalizedError {
     case notAvailable
-    case noRouteData
 
     var errorDescription: String? {
         switch self {
         case .notAvailable: return "HealthKit is not available on this device."
-        case .noRouteData:  return "No GPS route data found in the selected activities."
         }
     }
 }
@@ -146,22 +148,40 @@ final class HealthKitImporter {
 
     /// Fetches GPS routes for the supplied workouts, converts to H3 hexes, and inserts into SwiftData.
     /// Only hexes not already in the database are written. On success, advances the sync watermark.
+    ///
+    /// If workoutsWithRoutes == 0 in the returned result, Garmin Connect is syncing workout
+    /// summaries but not GPS track data to HealthKit. In that case the caller should direct
+    /// the user to export GPX files from Garmin Connect instead.
     func importWorkouts(_ workouts: [HKWorkout]) async throws -> GarminSyncResult {
         guard !workouts.isEmpty else {
-            return GarminSyncResult(newHexCount: 0, newRegionCount: 0, workoutsProcessed: 0)
+            return GarminSyncResult(newHexCount: 0, newRegionCount: 0,
+                                    workoutsProcessed: 0, workoutsWithRoutes: 0)
         }
 
-        // 1. Collect all CLLocation objects across all workout routes (sequential; HealthKit
-        //    does not support concurrent route queries on the same store instance).
+        // 1. Collect all CLLocation objects across all workout routes. Count how many workouts
+        //    actually have route data so we can surface a useful diagnostic when it's 0.
         var rawLocations: [(coordinate: CLLocationCoordinate2D, date: Date)] = []
+        var workoutsWithRoutes = 0
         for workout in workouts {
             let locations = try await fetchLocations(for: workout)
-            for loc in locations {
-                rawLocations.append((loc.coordinate, loc.timestamp))
+            if !locations.isEmpty {
+                workoutsWithRoutes += 1
+                for loc in locations {
+                    rawLocations.append((loc.coordinate, loc.timestamp))
+                }
             }
         }
 
-        guard !rawLocations.isEmpty else { throw HealthKitError.noRouteData }
+        // No route data at all — return gracefully so the UI can show a targeted message.
+        // This is the expected outcome when Garmin Connect is the source: it writes workout
+        // summaries to HealthKit but does not attach HKWorkoutRoute GPS track data.
+        guard !rawLocations.isEmpty else {
+            print("⚠️ Garmin sync: \(workouts.count) workout(s) found, 0 had GPS route data. " +
+                  "Garmin Connect does not sync GPS routes to HealthKit. " +
+                  "Export GPX files from Garmin Connect instead.")
+            return GarminSyncResult(newHexCount: 0, newRegionCount: 0,
+                                    workoutsProcessed: workouts.count, workoutsWithRoutes: 0)
+        }
 
         // 2. Coordinate → H3 conversion off the main thread (CPU-bound).
         //    Mirrors the GPXImporter pipeline exactly: consecutive dedup + set dedup.
@@ -205,7 +225,8 @@ final class HealthKitImporter {
 
         guard !pendingHexes.isEmpty else {
             return GarminSyncResult(newHexCount: 0, newRegionCount: 0,
-                                    workoutsProcessed: workouts.count)
+                                    workoutsProcessed: workouts.count,
+                                    workoutsWithRoutes: workoutsWithRoutes)
         }
 
         // 3. One batch fetch to find hexes already in SwiftData
@@ -267,9 +288,11 @@ final class HealthKitImporter {
         }
 
         print("✅ Garmin sync: \(newHexCount) new hexes, \(newRegionCount) new regions " +
-              "from \(workouts.count) workouts, \(rawLocations.count) GPS points")
+              "from \(workoutsWithRoutes)/\(workouts.count) workouts with routes, " +
+              "\(rawLocations.count) GPS points")
         return GarminSyncResult(newHexCount: newHexCount, newRegionCount: newRegionCount,
-                                workoutsProcessed: workouts.count)
+                                workoutsProcessed: workouts.count,
+                                workoutsWithRoutes: workoutsWithRoutes)
     }
 
     // MARK: - Private: GPS route fetching

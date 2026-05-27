@@ -162,7 +162,7 @@ struct SettingsView: View {
                     } header: {
                         Text("Garmin Connect")
                     } footer: {
-                        Text("Imports activities synced from Garmin Connect to Apple Health. Garmin Connect → Health sync must be enabled in the Garmin Connect iOS app.")
+                        Text("Requires Garmin Connect → Apple Health sync. Note: Garmin Connect syncs activity summaries but not GPS routes to Apple Health — if no hexes appear, use "Import GPX Tracks" instead.")
                     }
                 }
 
@@ -346,13 +346,15 @@ struct SettingsView: View {
                                 garminLastSyncTimestamp = UserDefaults.standard.double(
                                     forKey: HealthKitImporter.lastSyncKey
                                 )
-                                if result.newHexCount == 0 {
-                                    let n = result.workoutsProcessed
-                                    alertMessage = "All \(n) activit\(n == 1 ? "y was" : "ies were") already on your map — nothing new to add."
+                                let w = result.workoutsProcessed
+                                if result.workoutsWithRoutes == 0 {
+                                    // Garmin Connect found but contains no HKWorkoutRoute data
+                                    alertMessage = "\(w) activit\(w == 1 ? "y" : "ies") found in Apple Health, but none contain GPS route data.\n\nGarmin Connect syncs activity summaries to Apple Health, not the full GPS track. Use "Import GPX Tracks" below — export the GPX file from the Garmin Connect app (Activity → ⋯ → Export) or garmin.com."
+                                } else if result.newHexCount == 0 {
+                                    alertMessage = "All \(w) activit\(w == 1 ? "y was" : "ies were") already on your map — nothing new to add."
                                 } else {
                                     let h = result.newHexCount
                                     let r = result.newRegionCount
-                                    let w = result.workoutsProcessed
                                     alertMessage = "Synced \(h) new hex\(h == 1 ? "" : "es") across \(r) new town\(r == 1 ? "" : "s") from \(w) activit\(w == 1 ? "y" : "ies")."
                                 }
                             } catch {
