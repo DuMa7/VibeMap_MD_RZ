@@ -24,6 +24,10 @@ struct MapView: View {
     /// Fast lookup for region colour — avoids O(N) scan per visible municipality per render
     @State private var regionLookup: [String: RegionExploration] = [:]
 
+    /// Exploration % per canton (visited municipalities / total municipalities in that canton).
+    /// Computed in rebuildRegionCaches and used to shade canton polygons.
+    @State private var cantonExplorationPct: [String: Double] = [:]
+
     /// Handle for the in-flight street-zoom (res-10) outline rebuild
     @State private var streetOutlineTask: Task<Void, Never>?
 
@@ -51,7 +55,7 @@ struct MapView: View {
                     ForEach(layerManager.cantons.filter { cachedCantonIDs.contains($0.id) }) { canton in
                         ForEach(0..<canton.polygons.count, id: \.self) { i in
                             MapPolygon(coordinates: canton.polygons[i])
-                                .foregroundStyle(.orange.opacity(0.5))
+                                .foregroundStyle(colorForCanton(canton.id))
                                 .stroke(.white, lineWidth: 1.5)
                         }
                     }
@@ -181,33 +185,63 @@ struct MapView: View {
 
     // MARK: - Region Caches
 
-    /// Rebuilds all three region-derived caches in one pass over `regions`.
+    /// Rebuilds all region-derived caches in one pass over `regions`.
     /// Called on appear and on every regions change — NOT on exploredHexes change,
     /// since canton/municipality membership only changes when a new region is discovered.
     private func rebuildRegionCaches() {
-        var cantonIDs    = Set<String>()
-        var muniIDs      = Set<String>()
-        var lookup       = [String: RegionExploration](minimumCapacity: regions.count)
+        var cantonIDs        = Set<String>()
+        var muniIDs          = Set<String>()
+        var lookup           = [String: RegionExploration](minimumCapacity: regions.count)
+        var visitedPerCanton = [String: Int]()
+
         for region in regions {
             muniIDs.insert(region.regionID)
             lookup[region.regionID] = region
             if let cantonID = RegionMetadataManager.shared.municipalities[region.regionID]?.cantonID {
                 cantonIDs.insert(cantonID)
+                visitedPerCanton[cantonID, default: 0] += 1
             }
         }
-        cachedCantonIDs      = cantonIDs
+
+        // Total municipalities per canton — derived from bundled metadata, constant at runtime.
+        // Computed here (not cached globally) because rebuildRegionCaches is called rarely.
+        var totalPerCanton = [String: Int]()
+        for (_, meta) in RegionMetadataManager.shared.municipalities {
+            totalPerCanton[meta.cantonID, default: 0] += 1
+        }
+
+        // Canton exploration % = visited municipalities / total municipalities in that canton
+        var pct = [String: Double]()
+        for (cantonID, visitedCount) in visitedPerCanton {
+            let total = totalPerCanton[cantonID] ?? 1
+            pct[cantonID] = Double(visitedCount) / Double(total)
+        }
+
+        cachedCantonIDs       = cantonIDs
         cachedMunicipalityIDs = muniIDs
-        regionLookup         = lookup
+        regionLookup          = lookup
+        cantonExplorationPct  = pct
     }
 
     // MARK: - Region Color
 
-    /// Returns a flat orange fill for any visited municipality.
-    /// Opacity is uniform regardless of how many hexes have been explored —
-    /// each hex is recorded once and the coverage percentage does not affect colour.
+    /// Returns an orange fill whose opacity scales with the municipality's hex exploration %.
+    /// Floor of 0.15 keeps even barely-visited municipalities visible on the map.
+    /// Ceiling of 0.6 avoids solid orange blobs at full coverage.
     private func colorForRegion(_ id: String) -> AnyShapeStyle {
-        guard regionLookup[id] != nil else { return AnyShapeStyle(.clear) }
-        return AnyShapeStyle(.orange.opacity(0.4))
+        guard let region = regionLookup[id] else { return AnyShapeStyle(.clear) }
+        let pct = region.explorationPercentage / 100.0   // explorationPercentage is 0–100
+        let opacity = max(0.15, pct * 0.6)
+        return AnyShapeStyle(.orange.opacity(opacity))
+    }
+
+    /// Returns an orange fill whose opacity scales with the fraction of municipalities visited
+    /// in the canton (cantonExplorationPct is pre-computed in rebuildRegionCaches).
+    /// Same floor/ceiling as colorForRegion so the two zoom levels look consistent.
+    private func colorForCanton(_ id: String) -> AnyShapeStyle {
+        let pct = cantonExplorationPct[id] ?? 0.0   // already 0.0–1.0
+        let opacity = max(0.15, pct * 0.6)
+        return AnyShapeStyle(.orange.opacity(opacity))
     }
 }
 

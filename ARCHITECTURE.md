@@ -74,7 +74,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | File | Lines | Role |
 |---|---|---|
 | `ContentView.swift` | 923 | Central orchestrator. Owns all top-level state: map camera, HUD pill data, achievement queue, session prompt, layer settings. Hosts the splash/map transition and all overlay sheets. Contains the crosshair region lookup pipeline (`updateCenteredRegion`) and the canton count cache. |
-| `MapView.swift` | 221 | Renders the `Map`. Owns the zoom-level rendering ladder and two independent outline rebuild pipelines (street zoom via `rebuildStreetOutlines`, mid-zoom via `rebuildMidZoomOutlines`). All overlays use flat `orange.opacity(0.4)` — no heat-map or visit-count colouring. Also owns region colour caches. |
+| `MapView.swift` | 238 | Renders the `Map`. Owns the zoom-level rendering ladder and two independent outline rebuild pipelines (street zoom via `rebuildStreetOutlines`, mid-zoom via `rebuildMidZoomOutlines`). Individual hex outlines (res-9 and res-10) use a flat `orange.opacity(0.4)`; aggregated municipality and canton polygons scale opacity with exploration % (floor 0.15, ceiling 0.6). Also owns region colour caches. |
 | `SettingsView.swift` | 505 | Backup export/import UI, GPX import UI, achievement list, data clear. Manages async preview → confirm workflows for both import types. |
 | `PassportView.swift` | 210 | Canton-by-canton progress. Computes visited/total municipalities per canton. Maps Swiss federal canton IDs (KTNR) to ISO abbreviations. |
 | `SplashView.swift` | 122 | 2.5 s launch animation. Rotating hex ring + spinning globe. Dismissed by ContentView with a fade. |
@@ -155,8 +155,8 @@ exploredHexes (@Query, SwiftData) changes
 
 currentSpan < 0.02 → hexOutlines rendered as MapPolygon
 currentSpan 0.02–0.2 → res9Outlines rendered
-currentSpan 0.2–2.0 → municipality GeoJSON polygons (coloured by exploration %)
-currentSpan 2.0–10.0 → canton GeoJSON polygons
+currentSpan 0.2–2.0 → municipality GeoJSON polygons (opacity = max(0.15, explorationPct × 0.6))
+currentSpan 2.0–10.0 → canton GeoJSON polygons (opacity = max(0.15, visitedMunis/totalMunis × 0.6))
 currentSpan ≥ 10.0 → nothing
 ```
 
