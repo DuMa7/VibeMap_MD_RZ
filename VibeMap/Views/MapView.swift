@@ -202,14 +202,12 @@ struct MapView: View {
 
     // MARK: - Region Color
 
-    /// Returns an opacity-scaled orange style for a region based on its exploration percentage.
-    /// Regions with 0 totalHexes return clear to avoid division by zero.
+    /// Returns a flat orange fill for any visited municipality.
+    /// Opacity is uniform regardless of how many hexes have been explored —
+    /// each hex is recorded once and the coverage percentage does not affect colour.
     private func colorForRegion(_ id: String) -> AnyShapeStyle {
-        guard let region = regionLookup[id], region.totalHexes > 0 else {
-            return AnyShapeStyle(.clear)
-        }
-        let percentage = Double(region.exploredHexes.count) / Double(region.totalHexes)
-        return AnyShapeStyle(.orange.opacity(max(0.15, percentage)))
+        guard regionLookup[id] != nil else { return AnyShapeStyle(.clear) }
+        return AnyShapeStyle(.orange.opacity(0.4))
     }
 }
 

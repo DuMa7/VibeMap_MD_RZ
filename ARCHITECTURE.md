@@ -74,7 +74,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | File | Lines | Role |
 |---|---|---|
 | `ContentView.swift` | 923 | Central orchestrator. Owns all top-level state: map camera, HUD pill data, achievement queue, session prompt, layer settings. Hosts the splash/map transition and all overlay sheets. Contains the crosshair region lookup pipeline (`updateCenteredRegion`) and the canton count cache. |
-| `MapView.swift` | 224 | Renders the `Map`. Owns the zoom-level rendering ladder and two independent outline rebuild pipelines (street zoom via `rebuildStreetOutlines`, mid-zoom via `rebuildMidZoomOutlines`). Also owns region colour caches. |
+| `MapView.swift` | 221 | Renders the `Map`. Owns the zoom-level rendering ladder and two independent outline rebuild pipelines (street zoom via `rebuildStreetOutlines`, mid-zoom via `rebuildMidZoomOutlines`). All overlays use flat `orange.opacity(0.4)` — no heat-map or visit-count colouring. Also owns region colour caches. |
 | `SettingsView.swift` | 505 | Backup export/import UI, GPX import UI, achievement list, data clear. Manages async preview → confirm workflows for both import types. |
 | `PassportView.swift` | 210 | Canton-by-canton progress. Computes visited/total municipalities per canton. Maps Swiss federal canton IDs (KTNR) to ISO abbreviations. |
 | `SplashView.swift` | 122 | 2.5 s launch animation. Rotating hex ring + spinning globe. Dismissed by ContentView with a fade. |
@@ -98,7 +98,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 
 | File | Lines | Role |
 |---|---|---|
-| `ExplorationModels.swift` | 57 | Two SwiftData models. `ExploredHex`: one record per H3 cell visited (`@Attribute(.unique)` on h3Index). `LocationPoint`: raw GPS coordinates — currently unused, reserved for a future breadcrumb feature. |
+| `ExplorationModels.swift` | 52 | Two SwiftData models. `ExploredHex`: one record per H3 cell visited (`@Attribute(.unique)` on h3Index); each hex is written exactly once, never updated. `visitCount` is always 1 and kept only to avoid a SwiftData schema migration. `LocationPoint`: raw GPS coordinates — currently unused, reserved for a future breadcrumb feature. |
 | `RegionExploration.swift` | 55 | SwiftData model for per-municipality stats. Stores `exploredHexes: [String]` (persistable) plus a `@Transient Set<String>` for O(1) membership checks. The set is lazily rebuilt from the array on first access after a fetch. **All mutations must go through `addExploredHex` to keep array and set in sync.** Inline SQLite repair in `explorationPercentage` self-heals records where `totalHexes` was saved as 0. |
 | `Achievement.swift` | 111 | 7 achievements defined as structs with `(hexCount, cityCount) -> Bool` closure criteria. Persistence uses title strings (not UUIDs, which regenerate each launch). `AchievementRow` is the list cell used in SettingsView and the stats overlay. |
 | `BackupModels.swift` | 47 | Codable DTOs for JSON serialisation: `BackupData`, `HexBackupDTO`, `RegionBackupDTO`, `BackupPreview`. |
@@ -212,7 +212,7 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 
 | Item | Detail |
 |---|---|
-| `visitCount` / `recordVisit()` dead code | Defined on `ExploredHex` but never called. LocationManager's dedup prevents revisits from reaching SwiftData. |
+| `visitCount` vestigial property | Always 1 on every `ExploredHex`. `recordVisit()` has been removed. The field is kept in the model to avoid a SwiftData schema migration; remove it with a `VersionedSchema` bump when the model is next versioned. |
 | `LocationPoint` model unused | Defined and included in ModelContainer but never written to. Reserved for future breadcrumb feature. |
 | `currentZoomPercentage` does a linear scan | At canton zoom, finds the canton by a `.first(where:)` scan over `layerManager.cantons` on every render. Fine for 26 cantons, worth caching if canton list grows. |
 | `LiveLocationDetector` not wired to HUD | Detects current municipality in real time but `ContentView` uses the crosshair-based `updateCenteredRegion` instead. Either wire it or remove it. |
