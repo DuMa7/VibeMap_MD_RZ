@@ -145,25 +145,35 @@ stopSession()
 ### Map rendering pipeline
 
 ```
-exploredHexes (@Query, SwiftData) changes
-  ├─ rebuildMidZoomOutlines()    ← always; 1.5 s debounce; detached task
-  │    └─ res-10 → res-9 parent promotion (H3Wrapper.cellToParent)
-  │    └─ HexMerger.mergeHexOutlines(res9Indices) → res9Outlines
+exploredHexes (@Query, SwiftData) or currentSpan/centerCoordinate changes
+  ├─ rebuildMidZoomOutlines()    ← only if currentSpan < 0.2; own task handle
+  │    └─ viewportFilteredIndices(bufferFactor: 4.0)  ← 4× buffer; H3Wrapper.cellCenter
+  │    └─ detached task: res-10 → res-9 parent promotion (H3Wrapper.cellToParent)
+  │    └─ HexMerger.mergeHexOutlines(res9Culled) → res9Outlines
+  │    └─ adaptive debounce: 300 ms if < 2 000 culled hexes, 800 ms otherwise
   │
-  └─ rebuildStreetOutlines()     ← only if currentSpan < 0.02
-       └─ viewportFilteredIndices() (H3Wrapper.cellCenter per hex)
+  └─ rebuildStreetOutlines()     ← only if currentSpan < 0.02; own task handle
+       └─ viewportFilteredIndices(bufferFactor: 2.0)  ← 2× buffer
        └─ HexMerger.mergeHexOutlines(filtered) → hexOutlines
+       └─ adaptive debounce: 300 ms if < 500 hexes, 1 500 ms otherwise
 
-currentSpan < 0.02 → hexOutlines rendered as MapPolygon
-currentSpan 0.02–0.2 → res9Outlines rendered
+currentSpan < 0.02 → hexOutlines rendered as MapPolygon (flat orange.opacity(0.4))
+currentSpan 0.02–0.2 → res9Outlines rendered (flat orange.opacity(0.4))
 currentSpan 0.2–2.0 → municipality GeoJSON polygons (opacity = max(0.15, explorationPct × 0.6))
 currentSpan 2.0–10.0 → canton GeoJSON polygons (opacity = max(0.15, visitedMunis/totalMunis × 0.6))
 currentSpan ≥ 10.0 → nothing
 ```
 
-Rebuild also triggers on:
-- `onChange(of: currentSpan)` → handles pure pinch-zoom (no centre change)
-- `onChange(of: centerCoordinate)` → handles pan at street zoom
+Viewport culling: `viewportFilteredIndices(from:center:span:bufferFactor:)` filters hexes
+by centroid bounding box. Street zoom uses 2× buffer (1-screen pan margin); mid-zoom uses
+4× buffer (~1.5-screen margin appropriate for larger mid-zoom viewports). The two layers
+have independent task handles so a street-zoom pan cannot cancel a mid-zoom rebuild and
+vice versa.
+
+Rebuild triggers:
+- `onChange(of: exploredHexes)` — new hex recorded or imported
+- `onChange(of: currentSpan)` — pinch-zoom (no centre change)
+- `onChange(of: centerCoordinate)` — pan (no span change)
 
 ### Crosshair region lookup (HUD pill)
 

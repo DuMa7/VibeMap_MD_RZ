@@ -91,13 +91,14 @@ struct MapView: View {
         }
         .onAppear {
             rebuildRegionCaches()
-            rebuildMidZoomOutlines(exploredHexes)
+            // Only rebuild the layers that are currently visible
+            if currentSpan < 0.2  { rebuildMidZoomOutlines(exploredHexes) }
             if currentSpan < 0.02 { rebuildStreetOutlines(exploredHexes) }
         }
         .onChange(of: exploredHexes) { _, newHexes in
-            // Keep both outline sets current regardless of the active zoom level —
-            // the user may zoom between layers at any time.
-            rebuildMidZoomOutlines(newHexes)
+            // Only rebuild layers relevant to the current zoom — at municipality/canton zoom
+            // there are no hex outlines visible; the zoom-in transition triggers the rebuild.
+            if currentSpan < 0.2  { rebuildMidZoomOutlines(newHexes) }
             if currentSpan < 0.02 { rebuildStreetOutlines(newHexes) }
         }
         .onChange(of: regions) { _, _ in
@@ -107,11 +108,20 @@ struct MapView: View {
         // Handles the common case where the map centre stays constant —
         // onChange(of: centerCoordinate) would not fire for a pure zoom gesture.
         .onChange(of: currentSpan) { _, newSpan in
-            if newSpan < 0.02 { rebuildStreetOutlines(exploredHexes) }
+            if newSpan < 0.02 {
+                rebuildStreetOutlines(exploredHexes)
+            } else if newSpan < 0.2 {
+                // Zooming into or within mid-zoom — viewport has changed, rebuild outlines.
+                rebuildMidZoomOutlines(exploredHexes)
+            }
         }
-        // Pan trigger: fires when the user pans at street zoom (centre changes, span stays).
+        // Pan trigger: fires when the user pans (centre changes, span stays).
         .onChange(of: centerCoordinate) { _, _ in
-            if currentSpan < 0.02 { rebuildStreetOutlines(exploredHexes) }
+            if currentSpan < 0.02 {
+                rebuildStreetOutlines(exploredHexes)
+            } else if currentSpan < 0.2 {
+                rebuildMidZoomOutlines(exploredHexes)
+            }
         }
     }
 
@@ -138,40 +148,54 @@ struct MapView: View {
         }
     }
 
-    /// Builds global res-9 outlines for the mid-zoom layer (span 0.02 – 0.2).
-    /// No viewport culling: at mid-zoom the visible area spans several km and the
-    /// promoted res-9 set is already ~7× smaller than the full res-10 set.
+    /// Builds viewport-culled res-9 outlines for the mid-zoom layer (span 0.02 – 0.2).
+    /// Uses a 4× buffer so the user can pan ~1.5 viewports before a rebuild fires.
+    /// `cellToParent` promotion runs inside the detached task (CPU-bound, off main thread).
     /// Uses its own task handle so street-zoom pans cannot cancel it.
     ///
     /// All hexes are stored at res-10, so this always promotes via cellToParent.
-    /// The resolution check is kept for safety against any legacy res-9 records
-    /// that may exist in older installs.
+    /// The legacy res-9 branch is kept for older installs that may have res-9 records.
     private func rebuildMidZoomOutlines(_ hexes: [ExploredHex]) {
-        let res9Indices = Array(Set(hexes.compactMap { hex -> String? in
-            if hex.resolution == 9 { return hex.h3Index }   // legacy record — use as-is
-            return H3Wrapper.cellToParent(h3Index: hex.h3Index, parentRes: 9)
-        }))
+        guard let center = centerCoordinate else { return }
+        // 4× buffer: mid-zoom viewport spans several km; wider margin lets the
+        // user pan ~1.5 screens before a rebuild triggers.
+        let indices = viewportFilteredIndices(from: hexes, center: center,
+                                              span: currentSpan, bufferFactor: 4.0)
+        // Adaptive debounce: small culled set → snappy; large set → let the
+        // previous result stay visible while the new one renders.
+        let debounceNs: UInt64 = indices.count < 2_000 ? 300_000_000 : 800_000_000
 
         midZoomOutlineTask?.cancel()
         midZoomOutlineTask = Task {
-            do { try await Task.sleep(nanoseconds: 1_500_000_000) } catch { return }
+            do { try await Task.sleep(nanoseconds: debounceNs) } catch { return }
             let result = await Task.detached(priority: .userInitiated) {
-                HexMerger.mergeHexOutlines(res9Indices)
+                // Promote every res-10 index to its res-9 parent off the main thread.
+                // Legacy res-9 records (older installs) are passed through as-is.
+                let res9 = Array(Set(indices.compactMap { h3Index -> String? in
+                    H3Wrapper.cellToParent(h3Index: h3Index, parentRes: 9)
+                }))
+                return HexMerger.mergeHexOutlines(res9)
             }.value
             guard !Task.isCancelled else { return }
             res9Outlines = result
-            print("📐 Mid-zoom outlines: \(result.count) rings from \(res9Indices.count) res-9 cells")
+            print("📐 Mid-zoom outlines: \(result.count) rings from \(indices.count) culled hexes (\(hexes.count) total)")
         }
     }
 
     /// Returns the h3Index strings of hexes whose centroid falls within the viewport bounding box.
-    /// A 2× buffer beyond the visible span lets the user pan slightly without triggering a rebuild.
+    ///
+    /// - Parameters:
+    ///   - bufferFactor: Multiplier applied to `span` on each side of the viewport.
+    ///     `2.0` (street zoom default) keeps a 1-screen pan margin before a rebuild triggers.
+    ///     `4.0` (mid-zoom) keeps a ~1.5-screen margin — appropriate because mid-zoom
+    ///     viewports cover several km and pans tend to be larger.
     private func viewportFilteredIndices(
         from hexes: [ExploredHex],
         center: CLLocationCoordinate2D,
-        span: Double
+        span: Double,
+        bufferFactor: Double = 2.0
     ) -> [String] {
-        let buffer = span * 2.0
+        let buffer = span * bufferFactor
         let minLat = center.latitude  - buffer
         let maxLat = center.latitude  + buffer
         let minLon = center.longitude - buffer
