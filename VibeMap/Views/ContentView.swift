@@ -131,10 +131,15 @@ struct ContentView: View {
                 try? BackupManager(modelContext: modelContext).saveAutoBackup()
             }
         }
+        .task {
+            // Run data migrations before any view logic uses the database.
+            // Each migration is gated by a UserDefaults flag — no-op after first completion.
+            await DataMigrationManager.runPendingMigrations(context: modelContext)
+        }
         .onAppear {
             // Inject the SwiftData context into LocationManager so it can persist hexes
             locationManager.modelContext = modelContext
-            
+
             // Dismiss splash screen after 2.5s then seed initial achievement state
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 withAnimation { isLoading = false }

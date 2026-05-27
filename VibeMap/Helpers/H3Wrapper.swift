@@ -59,6 +59,19 @@ struct H3Wrapper {
         return String(parent, radix: 16)
     }
 
+    /// Returns the res-`childRes` child cell whose centroid is closest to the parent's centroid.
+    /// Used by the res-9 → res-10 migration to pick a single representative child for each
+    /// legacy res-9 record. The mapping is deterministic and requires no original GPS data.
+    static func cellToCenterChild(h3Index: String, childRes: Int32) -> String? {
+        guard let index = UInt64(h3Index, radix: 16) else { return nil }
+        do {
+            let child = try H3.cellToCenterChild(cell: index, childResolution: Int(childRes))
+            return String(child, radix: 16)
+        } catch {
+            return nil
+        }
+    }
+
     /// Returns the geographic centroid of an H3 cell by averaging its boundary vertices.
     /// For a convex hexagon the centroid equals the vertex average exactly, so no approximation
     /// is needed. Used for viewport filtering before passing indices to HexMerger.

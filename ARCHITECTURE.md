@@ -92,6 +92,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | `BackupManager.swift` | 129 | Serialises all `ExploredHex` and `RegionExploration` records to JSON (`BackupData` v2). Restores by decoding and merging (skips duplicates). Auto-backup runs on scene background. |
 | `GPXImporter.swift` | 300 | Two-phase import: `parse()` (no DB writes, builds preview summary) and `importFiles()` (batch write). The coordinate→H3 conversion runs on a detached task. Only genuinely new hexes reach SwiftData. |
 | `HealthKitImporter.swift` | 230 | Two-phase sync from any app that writes `HKWorkoutRoute` GPS data (Komoot, Apple Fitness, Strava, etc.). `buildPreview()` fetches workout metadata and groups by source app. `importWorkouts()` fetches GPS routes via `HKWorkoutRouteQuery`, converts to H3 off-thread (same pipeline as GPXImporter), and batch-inserts new hexes. Tracks hexes per source app for the result summary. Stores a sync watermark in UserDefaults (`healthKitLastSyncDate`) for incremental syncs. Apps that only sync summaries (e.g. Garmin Connect) produce `workoutsWithRoutes = 0` in the result and are called out in the UI. |
+| `DataMigrationManager.swift` | 130 | One-time data migrations run from `ContentView.task` on each launch. Each migration is gated by a UserDefaults flag. **Migration 1 (`hasCompletedRes9ToRes10Migration_v1`)**: converts every res-9 `ExploredHex` to its res-10 centre child via `H3Wrapper.cellToCenterChild`. If a res-10 counterpart already exists the res-9 record is removed without creating a duplicate. `RegionExploration.exploredHexes` is updated in the same atomic `context.save()`. |
 | `LiveLocationDetector.swift` | 74 | Real-time municipality/canton detection from current GPS coordinate. Uses `OfflineDatabase` for the lookup. Kept for future use; currently does not drive the HUD pill directly. |
 | `RegionMetadataManager.swift` | 11 | Singleton cache of `[regionID: (name, cantonID)]`. Populated once by `MapLayerManager` during GeoJSON parse. Read-only after that. |
 
@@ -109,7 +110,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 
 | File | Lines | Role |
 |---|---|---|
-| `H3Wrapper.swift` | 73 | Static wrappers around the H3 C library. Key methods: `getRawIndex` (coordinate → UInt64 index), `getVertices` (index → boundary coordinates), `cellToParent` (promote to coarser resolution), `cellCenter` (centroid by vertex average — used for viewport culling). |
+| `H3Wrapper.swift` | 87 | Static wrappers around the H3 Swift package. Key methods: `getRawIndex` (coordinate → UInt64 index), `getVertices` (index → boundary coordinates), `cellToParent` (promote to coarser resolution), `cellToCenterChild` (unique child closest to parent centroid — used by the res-9 migration), `cellCenter` (centroid by vertex average — used for viewport culling). |
 | `HexMerger.swift` | 74 | Half-edge boundary algorithm. Collects all directed edges from a set of H3 hexes, filters to boundary edges (those with no reverse), then walks closed rings. Reduces N individual polygons to a handful of merged cluster outlines. `CoordKey` rounds coordinates to 7 decimal places (~1 cm) to safely compare vertices across independently-computed adjacent cells. |
 
 ---
@@ -239,7 +240,7 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 |---|---|
 | `visitCount` vestigial property | Always 1 on every `ExploredHex`. `recordVisit()` has been removed. The field is kept in the model to avoid a SwiftData schema migration; remove it with a `VersionedSchema` bump when the model is next versioned. |
 | `LocationPoint` model unused | Defined and included in ModelContainer but never written to. Reserved for future breadcrumb feature. |
-| Legacy res-9 hexes | All recording paths (live GPS, GPX import, HealthKit sync) now always save `resolution: 10`. Older installs may have a small number of res-9 records for boundary areas. `rebuildMidZoomOutlines` keeps a legacy branch (`if hex.resolution == 9`) to handle them correctly at all zoom levels. |
+| Legacy res-9 hexes | All recording paths (live GPS, GPX import, HealthKit sync) now always save `resolution: 10`. On first launch after updating, `DataMigrationManager.migrateRes9ToRes10` converts every legacy res-9 record to its res-10 centre child in a single atomic `context.save()`. After migration the database contains only res-10 records and the rendering ladders work correctly at all zoom levels. |
 | `currentZoomPercentage` does a linear scan | At canton zoom, finds the canton by a `.first(where:)` scan over `layerManager.cantons` on every render. Fine for 26 cantons, worth caching if canton list grows. |
 | `LiveLocationDetector` not wired to HUD | Detects current municipality in real time but `ContentView` uses the crosshair-based `updateCenteredRegion` instead. Either wire it or remove it. |
 | No tests on core logic | `HexMerger`, `LocationManager` session lifecycle, and `GPXImporter` batch pipeline have no unit tests. The algorithm-heavy paths are the highest risk. |
