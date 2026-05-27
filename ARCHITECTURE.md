@@ -75,7 +75,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 |---|---|---|
 | `ContentView.swift` | 923 | Central orchestrator. Owns all top-level state: map camera, HUD pill data, achievement queue, session prompt, layer settings. Hosts the splash/map transition and all overlay sheets. Contains the crosshair region lookup pipeline (`updateCenteredRegion`) and the canton count cache. |
 | `MapView.swift` | 238 | Renders the `Map`. Owns the zoom-level rendering ladder and two independent outline rebuild pipelines (street zoom via `rebuildStreetOutlines`, mid-zoom via `rebuildMidZoomOutlines`). Individual hex outlines (res-9 and res-10) use a flat `orange.opacity(0.4)`; aggregated municipality and canton polygons scale opacity with exploration % (floor 0.15, ceiling 0.6). Also owns region colour caches. |
-| `SettingsView.swift` | 505 | Backup export/import UI, GPX import UI, achievement list, data clear. Manages async preview → confirm workflows for both import types. |
+| `SettingsView.swift` | 600 | Backup export/import UI, GPX import UI, Garmin Connect sync UI, achievement list, data clear. Manages async preview → confirm workflows for all import types. |
 | `PassportView.swift` | 210 | Canton-by-canton progress. Computes visited/total municipalities per canton. Maps Swiss federal canton IDs (KTNR) to ISO abbreviations. |
 | `SplashView.swift` | 122 | 2.5 s launch animation. Rotating hex ring + spinning globe. Dismissed by ContentView with a fade. |
 | `AchievementBannerView.swift` | 87 | Toast-style slide-down banner for achievement unlocks. Dismiss callback drives the queue in ContentView. |
@@ -91,6 +91,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | `OfflineDatabase.swift` | 90 | Singleton wrapping `swiss_index.sqlite`. Opens the file once, pre-compiles two SQLite statements (region lookup by hex index, hex count per region), and reuses them on every call. Used on every GPS fix — must be fast. |
 | `BackupManager.swift` | 129 | Serialises all `ExploredHex` and `RegionExploration` records to JSON (`BackupData` v2). Restores by decoding and merging (skips duplicates). Auto-backup runs on scene background. |
 | `GPXImporter.swift` | 300 | Two-phase import: `parse()` (no DB writes, builds preview summary) and `importFiles()` (batch write). The coordinate→H3 conversion runs on a detached task. Only genuinely new hexes reach SwiftData. |
+| `HealthKitImporter.swift` | 200 | Two-phase Garmin Connect sync via HealthKit. `buildPreview()` fetches workout metadata only (fast). `importWorkouts()` fetches GPS routes via `HKWorkoutRouteQuery`, converts to H3 off-thread (same pipeline as GPXImporter), and batch-inserts new hexes. Stores a sync watermark in UserDefaults (`garminHealthKitLastSyncDate`) for incremental syncs. Garmin workouts are identified by `sourceRevision.source.bundleIdentifier` containing "garmin". |
 | `LiveLocationDetector.swift` | 74 | Real-time municipality/canton detection from current GPS coordinate. Uses `OfflineDatabase` for the lookup. Kept for future use; currently does not drive the HUD pill directly. |
 | `RegionMetadataManager.swift` | 11 | Singleton cache of `[regionID: (name, cantonID)]`. Populated once by `MapLayerManager` during GeoJSON parse. Read-only after that. |
 
@@ -185,6 +186,18 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
    - Insert only new hexes; update/create `RegionExploration` via in-memory cache
    - `context.save()`
 
+### Garmin Connect sync pipeline
+
+1. User taps "Sync from Garmin" → `HealthKitImporter.requestAuthorization()` (no-op if already granted)
+2. `buildPreview(since: lastSyncDate)` → `HKSampleQuery` for workouts from Garmin source → `GarminSyncPreview` (metadata only, no GPS)
+3. Preview sheet shown (activity count, date range, total distance)
+4. User confirms → `importWorkouts(_ workouts:)`
+   - `fetchLocations(for:)` per workout: `HKAnchoredObjectQuery` → `[HKWorkoutRoute]` → `HKWorkoutRouteQuery` (batched CLLocation stream)
+   - Coordinate→H3 on detached task — identical to GPXImporter pipeline
+   - Batch fetch of existing hexes; insert only new ones
+   - `context.save()`
+   - UserDefaults watermark updated to latest workout end date
+
 ---
 
 ## External dependencies
@@ -194,6 +207,7 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 | **H3 (Uber)** via Swift package | Hierarchical hex grid. Resolution 9/10 parent-child relationship drives the zoom-level ladder. Offline C computation, <1 ms per fix. |
 | **swiss_index.sqlite** (bundled) | Pre-built map of every H3 cell in Switzerland → municipality ID. Eliminates network dependency for region detection. Schema: `Hex_Map(h3_index TEXT, region_id TEXT, resolution INTEGER)`. |
 | **cantons.geojson / municipalities.geojson** (bundled) | GeoJSON polygon data for map overlays and metadata (names, canton IDs). Loaded once at startup. |
+| **HealthKit** (system framework) | Read-only access to workout routes. Used exclusively by `HealthKitImporter` to pull Garmin Connect activities. Requires `com.apple.developer.healthkit` entitlement and `NSHealthShareUsageDescription` in Info.plist. |
 
 ---
 

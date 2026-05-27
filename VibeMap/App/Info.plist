@@ -10,6 +10,8 @@
 	<string>VibeMap tracks your exploration even when the app is closed, so you never miss discovered areas.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>VibeMap uses your motion activity to save battery by pausing GPS when you are stationary.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>VibeMap reads your Garmin workout routes from Apple Health to retroactively scratch hexes from past activities.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>
