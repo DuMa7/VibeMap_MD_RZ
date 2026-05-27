@@ -74,7 +74,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | File | Lines | Role |
 |---|---|---|
 | `ContentView.swift` | 923 | Central orchestrator. Owns all top-level state: map camera, HUD pill data, achievement queue, session prompt, layer settings. Hosts the splash/map transition and all overlay sheets. Contains the crosshair region lookup pipeline (`updateCenteredRegion`) and the canton count cache. |
-| `MapView.swift` | 238 | Renders the `Map`. Owns the zoom-level rendering ladder and two independent outline rebuild pipelines (street zoom via `rebuildStreetOutlines`, mid-zoom via `rebuildMidZoomOutlines`). Individual hex outlines (res-9 and res-10) use a flat `orange.opacity(0.4)`; aggregated municipality and canton polygons scale opacity with exploration % (floor 0.15, ceiling 0.6). Also owns region colour caches. |
+| `MapView.swift` | 210 | Renders the `Map`. Owns the zoom-level rendering ladder and a single viewport-culled outline rebuild pipeline (`rebuildHexOutlines`). Individual hex outlines (res-10 only) use a flat `orange.opacity(0.4)`; aggregated municipality and canton polygons scale opacity with exploration % (floor 0.15, ceiling 0.6). Also owns region colour caches. |
 | `SettingsView.swift` | 600 | Backup export/import UI, GPX import UI, Garmin Connect sync UI, achievement list, data clear. Manages async preview → confirm workflows for all import types. |
 | `PassportView.swift` | 210 | Canton-by-canton progress. Computes visited/total municipalities per canton. Maps Swiss federal canton IDs (KTNR) to ISO abbreviations. |
 | `SplashView.swift` | 122 | 2.5 s launch animation. Rotating hex ring + spinning globe. Dismissed by ContentView with a fade. |
@@ -147,29 +147,21 @@ stopSession()
 
 ```
 exploredHexes (@Query, SwiftData) or currentSpan/centerCoordinate changes
-  ├─ rebuildMidZoomOutlines()    ← only if currentSpan < 0.2; own task handle
-  │    └─ viewportFilteredIndices(bufferFactor: 4.0)  ← 4× buffer; H3Wrapper.cellCenter
-  │    └─ detached task: res-10 → res-9 parent promotion (H3Wrapper.cellToParent)
-  │    └─ HexMerger.mergeHexOutlines(res9Culled) → res9Outlines
-  │    └─ adaptive debounce: 300 ms if < 2 000 culled hexes, 800 ms otherwise
-  │
-  └─ rebuildStreetOutlines()     ← only if currentSpan < 0.02; own task handle
-       └─ viewportFilteredIndices(bufferFactor: 2.0)  ← 2× buffer
-       └─ HexMerger.mergeHexOutlines(filtered) → hexOutlines
-       └─ adaptive debounce: 300 ms if < 500 hexes, 1 500 ms otherwise
+  └─ rebuildHexOutlines()    ← only if currentSpan < 0.2; single task handle
+       └─ viewportFilteredIndices()  ← 2× buffer; H3Wrapper.cellCenter per hex
+       └─ HexMerger.mergeHexOutlines(culledIndices) → hexOutlines
+       └─ adaptive debounce: 300 ms if < 1 000 culled hexes, 800 ms otherwise
 
-currentSpan < 0.02 → hexOutlines rendered as MapPolygon (flat orange.opacity(0.4))
-currentSpan 0.02–0.2 → res9Outlines rendered (flat orange.opacity(0.4))
+currentSpan < 0.2   → hexOutlines rendered as MapPolygon (res-10, flat orange.opacity(0.4))
 currentSpan 0.2–2.0 → municipality GeoJSON polygons (opacity = max(0.15, explorationPct × 0.6))
 currentSpan 2.0–10.0 → canton GeoJSON polygons (opacity = max(0.15, visitedMunis/totalMunis × 0.6))
 currentSpan ≥ 10.0 → nothing
 ```
 
-Viewport culling: `viewportFilteredIndices(from:center:span:bufferFactor:)` filters hexes
-by centroid bounding box. Street zoom uses 2× buffer (1-screen pan margin); mid-zoom uses
-4× buffer (~1.5-screen margin appropriate for larger mid-zoom viewports). The two layers
-have independent task handles so a street-zoom pan cannot cancel a mid-zoom rebuild and
-vice versa.
+Viewport culling: `viewportFilteredIndices(from:center:span:)` filters hexes by centroid
+bounding box using a 2× span buffer on each side. Only hexes whose centroid falls within
+the enlarged viewport are passed to HexMerger. Hexes with no computable centroid are
+included as a safe fallback.
 
 Rebuild triggers:
 - `onChange(of: exploredHexes)` — new hex recorded or imported

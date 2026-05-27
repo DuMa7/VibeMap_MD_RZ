@@ -10,11 +10,6 @@ struct MapView: View {
     /// Replaces N individual MapPolygon views with a handful of cluster outlines.
     @State private var hexOutlines: [[CLLocationCoordinate2D]] = []
 
-    /// Merged outline polygons for all explored hexes promoted to res-9 — used at intermediate zoom levels.
-    /// Built by converting every res-10 hex to its res-9 parent, then merging. Gives complete
-    /// coarse coverage at mid-zoom rather than just the sparse boundary-fallback hexes.
-    @State private var res9Outlines: [[CLLocationCoordinate2D]] = []
-
     /// Canton IDs of all visited regions — cached to avoid recomputing on every render pass
     @State private var cachedCantonIDs: Set<String> = []
 
@@ -28,11 +23,8 @@ struct MapView: View {
     /// Computed in rebuildRegionCaches and used to shade canton polygons.
     @State private var cantonExplorationPct: [String: Double] = [:]
 
-    /// Handle for the in-flight street-zoom (res-10) outline rebuild
-    @State private var streetOutlineTask: Task<Void, Never>?
-
-    /// Handle for the in-flight mid-zoom (res-9) outline rebuild
-    @State private var midZoomOutlineTask: Task<Void, Never>?
+    /// Handle for the in-flight hex outline rebuild — cancelled and replaced on each trigger.
+    @State private var hexOutlineTask: Task<Void, Never>?
 
     var exploredHexes: [ExploredHex]
     var regions: [RegionExploration]
@@ -45,8 +37,7 @@ struct MapView: View {
         //   ≥ 10.0        — world/continent scale — nothing drawn
         //   2.0 – 10.0   — canton polygons
         //   0.2 – 2.0    — municipality fill polygons (opacity scales with exploration %)
-        //   0.02 – 0.2   — merged res-9 hex outlines (~city-block scale)
-        //   < 0.02       — full res-10 hex outlines (street level, ~15 m cells)
+        //   < 0.2        — res-10 hex outlines (viewport-culled, ~15 m cells)
         Map(position: $position) {
             UserAnnotation()
 
@@ -67,12 +58,6 @@ struct MapView: View {
                                 .stroke(.white.opacity(0.3), lineWidth: 0.5)
                         }
                     }
-                } else if currentSpan >= 0.02 {
-                    ForEach(res9Outlines.indices, id: \.self) { i in
-                        MapPolygon(coordinates: res9Outlines[i])
-                            .foregroundStyle(.orange.opacity(0.4))
-                            .stroke(.orange, lineWidth: 1)
-                    }
                 } else {
                     ForEach(hexOutlines.indices, id: \.self) { i in
                         MapPolygon(coordinates: hexOutlines[i])
@@ -91,15 +76,12 @@ struct MapView: View {
         }
         .onAppear {
             rebuildRegionCaches()
-            // Only rebuild the layers that are currently visible
-            if currentSpan < 0.2  { rebuildMidZoomOutlines(exploredHexes) }
-            if currentSpan < 0.02 { rebuildStreetOutlines(exploredHexes) }
+            if currentSpan < 0.2 { rebuildHexOutlines(exploredHexes) }
         }
         .onChange(of: exploredHexes) { _, newHexes in
-            // Only rebuild layers relevant to the current zoom — at municipality/canton zoom
-            // there are no hex outlines visible; the zoom-in transition triggers the rebuild.
-            if currentSpan < 0.2  { rebuildMidZoomOutlines(newHexes) }
-            if currentSpan < 0.02 { rebuildStreetOutlines(newHexes) }
+            // Only rebuild when hex outlines are actually visible — the zoom-in
+            // transition triggers a rebuild when the user crosses the 0.2 threshold.
+            if currentSpan < 0.2 { rebuildHexOutlines(newHexes) }
         }
         .onChange(of: regions) { _, _ in
             rebuildRegionCaches()
@@ -108,94 +90,48 @@ struct MapView: View {
         // Handles the common case where the map centre stays constant —
         // onChange(of: centerCoordinate) would not fire for a pure zoom gesture.
         .onChange(of: currentSpan) { _, newSpan in
-            if newSpan < 0.02 {
-                rebuildStreetOutlines(exploredHexes)
-            } else if newSpan < 0.2 {
-                // Zooming into or within mid-zoom — viewport has changed, rebuild outlines.
-                rebuildMidZoomOutlines(exploredHexes)
-            }
+            if newSpan < 0.2 { rebuildHexOutlines(exploredHexes) }
         }
         // Pan trigger: fires when the user pans (centre changes, span stays).
         .onChange(of: centerCoordinate) { _, _ in
-            if currentSpan < 0.02 {
-                rebuildStreetOutlines(exploredHexes)
-            } else if currentSpan < 0.2 {
-                rebuildMidZoomOutlines(exploredHexes)
-            }
+            if currentSpan < 0.2 { rebuildHexOutlines(exploredHexes) }
         }
     }
 
-    // MARK: - Outline Builders
+    // MARK: - Outline Builder
 
-    /// Builds viewport-culled res-10 outlines for the street-zoom layer (span < 0.02).
-    /// Only called when already at street zoom — never precomputed for other levels.
-    /// Uses its own task handle so mid-zoom rebuilds cannot cancel it.
-    private func rebuildStreetOutlines(_ hexes: [ExploredHex]) {
+    /// Builds viewport-culled res-10 hex outlines for any span < 0.2.
+    ///
+    /// A 2× buffer beyond the visible span lets the user pan one full screen before
+    /// a rebuild fires. The adaptive debounce keeps the map snappy at close zoom
+    /// (few hexes) while avoiding thrashing at wider zoom (many hexes).
+    private func rebuildHexOutlines(_ hexes: [ExploredHex]) {
         guard let center = centerCoordinate else { return }
         let indices = viewportFilteredIndices(from: hexes, center: center, span: currentSpan)
-        // Adaptive debounce: post-cull count is small at street zoom → fast and responsive.
-        let debounceNs: UInt64 = indices.count < 500 ? 300_000_000 : 1_500_000_000
+        // Adaptive debounce: tight zoom → small culled set → fast update.
+        // Wider zoom → larger culled set → let previous outlines stay visible while rebuilding.
+        let debounceNs: UInt64 = indices.count < 1_000 ? 300_000_000 : 800_000_000
 
-        streetOutlineTask?.cancel()
-        streetOutlineTask = Task {
+        hexOutlineTask?.cancel()
+        hexOutlineTask = Task {
             do { try await Task.sleep(nanoseconds: debounceNs) } catch { return }
             let result = await Task.detached(priority: .userInitiated) {
                 HexMerger.mergeHexOutlines(indices)
             }.value
             guard !Task.isCancelled else { return }
             hexOutlines = result
-            print("📐 Street outlines: \(result.count) rings from \(indices.count) visible hexes (\(hexes.count) total)")
-        }
-    }
-
-    /// Builds viewport-culled res-9 outlines for the mid-zoom layer (span 0.02 – 0.2).
-    /// Uses a 4× buffer so the user can pan ~1.5 viewports before a rebuild fires.
-    /// `cellToParent` promotion runs inside the detached task (CPU-bound, off main thread).
-    /// Uses its own task handle so street-zoom pans cannot cancel it.
-    ///
-    /// All hexes are stored at res-10, so this always promotes via cellToParent.
-    /// The legacy res-9 branch is kept for older installs that may have res-9 records.
-    private func rebuildMidZoomOutlines(_ hexes: [ExploredHex]) {
-        guard let center = centerCoordinate else { return }
-        // 4× buffer: mid-zoom viewport spans several km; wider margin lets the
-        // user pan ~1.5 screens before a rebuild triggers.
-        let indices = viewportFilteredIndices(from: hexes, center: center,
-                                              span: currentSpan, bufferFactor: 4.0)
-        // Adaptive debounce: small culled set → snappy; large set → let the
-        // previous result stay visible while the new one renders.
-        let debounceNs: UInt64 = indices.count < 2_000 ? 300_000_000 : 800_000_000
-
-        midZoomOutlineTask?.cancel()
-        midZoomOutlineTask = Task {
-            do { try await Task.sleep(nanoseconds: debounceNs) } catch { return }
-            let result = await Task.detached(priority: .userInitiated) {
-                // Promote every res-10 index to its res-9 parent off the main thread.
-                // Legacy res-9 records (older installs) are passed through as-is.
-                let res9 = Array(Set(indices.compactMap { h3Index -> String? in
-                    H3Wrapper.cellToParent(h3Index: h3Index, parentRes: 9)
-                }))
-                return HexMerger.mergeHexOutlines(res9)
-            }.value
-            guard !Task.isCancelled else { return }
-            res9Outlines = result
-            print("📐 Mid-zoom outlines: \(result.count) rings from \(indices.count) culled hexes (\(hexes.count) total)")
+            print("📐 Hex outlines: \(result.count) rings from \(indices.count) visible hexes (\(hexes.count) total)")
         }
     }
 
     /// Returns the h3Index strings of hexes whose centroid falls within the viewport bounding box.
-    ///
-    /// - Parameters:
-    ///   - bufferFactor: Multiplier applied to `span` on each side of the viewport.
-    ///     `2.0` (street zoom default) keeps a 1-screen pan margin before a rebuild triggers.
-    ///     `4.0` (mid-zoom) keeps a ~1.5-screen margin — appropriate because mid-zoom
-    ///     viewports cover several km and pans tend to be larger.
+    /// A 2× buffer beyond the visible span lets the user pan slightly without triggering a rebuild.
     private func viewportFilteredIndices(
         from hexes: [ExploredHex],
         center: CLLocationCoordinate2D,
-        span: Double,
-        bufferFactor: Double = 2.0
+        span: Double
     ) -> [String] {
-        let buffer = span * bufferFactor
+        let buffer = span * 2.0
         let minLat = center.latitude  - buffer
         let maxLat = center.latitude  + buffer
         let minLon = center.longitude - buffer
