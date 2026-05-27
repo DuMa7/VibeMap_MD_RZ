@@ -91,7 +91,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | `OfflineDatabase.swift` | 90 | Singleton wrapping `swiss_index.sqlite`. Opens the file once, pre-compiles two SQLite statements (region lookup by hex index, hex count per region), and reuses them on every call. Used on every GPS fix — must be fast. |
 | `BackupManager.swift` | 129 | Serialises all `ExploredHex` and `RegionExploration` records to JSON (`BackupData` v2). Restores by decoding and merging (skips duplicates). Auto-backup runs on scene background. |
 | `GPXImporter.swift` | 300 | Two-phase import: `parse()` (no DB writes, builds preview summary) and `importFiles()` (batch write). The coordinate→H3 conversion runs on a detached task. Only genuinely new hexes reach SwiftData. |
-| `HealthKitImporter.swift` | 200 | Two-phase Garmin Connect sync via HealthKit. `buildPreview()` fetches workout metadata only (fast). `importWorkouts()` fetches GPS routes via `HKWorkoutRouteQuery`, converts to H3 off-thread (same pipeline as GPXImporter), and batch-inserts new hexes. Stores a sync watermark in UserDefaults (`garminHealthKitLastSyncDate`) for incremental syncs. Garmin workouts are identified by `sourceRevision.source.bundleIdentifier` containing "garmin". |
+| `HealthKitImporter.swift` | 230 | Two-phase sync from any app that writes `HKWorkoutRoute` GPS data (Komoot, Apple Fitness, Strava, etc.). `buildPreview()` fetches workout metadata and groups by source app. `importWorkouts()` fetches GPS routes via `HKWorkoutRouteQuery`, converts to H3 off-thread (same pipeline as GPXImporter), and batch-inserts new hexes. Tracks hexes per source app for the result summary. Stores a sync watermark in UserDefaults (`healthKitLastSyncDate`) for incremental syncs. Apps that only sync summaries (e.g. Garmin Connect) produce `workoutsWithRoutes = 0` in the result and are called out in the UI. |
 | `LiveLocationDetector.swift` | 74 | Real-time municipality/canton detection from current GPS coordinate. Uses `OfflineDatabase` for the lookup. Kept for future use; currently does not drive the HUD pill directly. |
 | `RegionMetadataManager.swift` | 11 | Singleton cache of `[regionID: (name, cantonID)]`. Populated once by `MapLayerManager` during GeoJSON parse. Read-only after that. |
 
@@ -186,17 +186,18 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
    - Insert only new hexes; update/create `RegionExploration` via in-memory cache
    - `context.save()`
 
-### Garmin Connect sync pipeline
+### Apple Health sync pipeline (Komoot, Apple Fitness, Strava, …)
 
-1. User taps "Sync from Garmin" → `HealthKitImporter.requestAuthorization()` (no-op if already granted)
-2. `buildPreview(since: lastSyncDate)` → `HKSampleQuery` for workouts from Garmin source → `GarminSyncPreview` (metadata only, no GPS)
-3. Preview sheet shown (activity count, date range, total distance)
+1. User taps "Sync GPS Activities" → `HealthKitImporter.requestAuthorization()` (no-op if already granted)
+2. `buildPreview(since: lastSyncDate)` → `HKSampleQuery` for **all** workouts (no source filter) → `HealthSyncPreview` with source breakdown (metadata only, no GPS)
+3. Preview sheet shown (activity count, date range, source app list)
 4. User confirms → `importWorkouts(_ workouts:)`
-   - `fetchLocations(for:)` per workout: `HKAnchoredObjectQuery` → `[HKWorkoutRoute]` → `HKWorkoutRouteQuery` (batched CLLocation stream)
+   - `fetchLocations(for:)` per workout: `HKAnchoredObjectQuery` → `[HKWorkoutRoute]` → `HKWorkoutRouteQuery` (batched CLLocation stream). Workouts with no routes (e.g. Garmin Connect summaries) are silently skipped.
    - Coordinate→H3 on detached task — identical to GPXImporter pipeline
    - Batch fetch of existing hexes; insert only new ones
    - `context.save()`
-   - UserDefaults watermark updated to latest workout end date
+   - UserDefaults watermark advanced to latest workout end date
+   - Result carries `sourcesWithHexes` breakdown for the success alert
 
 ---
 

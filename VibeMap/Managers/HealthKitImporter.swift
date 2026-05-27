@@ -8,7 +8,7 @@ import H3
 /// Lightweight summary built from workout metadata only — no GPS route fetching.
 /// Handed to the UI so the user can review before confirming the import.
 /// Retains the workouts array so importWorkouts(_:) can reuse them without re-querying.
-struct GarminSyncPreview {
+struct HealthSyncPreview {
     let workouts: [HKWorkout]
 
     var workoutCount: Int { workouts.count }
@@ -31,16 +31,31 @@ struct GarminSyncPreview {
             .reduce(0, +)
         return meters / 1000.0
     }
+
+    /// Workout count per source app name — used to show a breakdown in the preview sheet.
+    /// e.g. ["Komoot": 5, "Apple Fitness": 3, "Garmin Connect": 12]
+    var sourceBreakdown: [(name: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for workout in workouts {
+            let name = workout.sourceRevision.source.name
+            counts[name, default: 0] += 1
+        }
+        return counts
+            .map { (name: $0.key, count: $0.value) }
+            .sorted { $0.count > $1.count }   // most active source first
+    }
 }
 
-struct GarminSyncResult {
+struct HealthSyncResult {
     let newHexCount: Int
     let newRegionCount: Int
     let workoutsProcessed: Int
     /// How many of the processed workouts had an HKWorkoutRoute attached.
-    /// If this is 0 while workoutsProcessed > 0, Garmin Connect is not syncing
-    /// GPS route data to HealthKit — the user needs to export GPX files instead.
+    /// When this is 0 while workoutsProcessed > 0, the source app is syncing
+    /// workout summaries only — not full GPS tracks — to HealthKit.
     let workoutsWithRoutes: Int
+    /// Source apps that contributed at least one GPS route, with their hex counts.
+    let sourcesWithHexes: [(name: String, hexCount: Int)]
 }
 
 // MARK: - Errors
@@ -57,15 +72,17 @@ enum HealthKitError: LocalizedError {
 
 // MARK: - HealthKitImporter
 
-/// Reads Garmin Connect workout routes from HealthKit and converts them to ExploredHex records.
+/// Reads GPS workout routes from HealthKit and converts them to ExploredHex records.
+/// Queries all workout sources — Komoot, Apple Fitness, Strava, Garmin Connect, etc.
+/// Apps that write HKWorkoutRoute data (Komoot, Apple Fitness, Strava) will produce hexes.
+/// Apps that only sync summaries (Garmin Connect) will be skipped silently with a note in the result.
 ///
 /// The pipeline mirrors GPXImporter:
-///   1. fetchGarminWorkouts  — metadata only, fast, used for the preview step
-///   2. importWorkouts       — fetches GPS routes, runs H3 conversion off-thread, batch-inserts
+///   1. fetchWorkouts    — metadata only, fast, used for the preview step
+///   2. importWorkouts   — fetches GPS routes, runs H3 off-thread, batch-inserts
 ///
 /// Incremental sync: the last-imported workout's end date is persisted in UserDefaults under
-/// `lastSyncKey`. buildPreview/importWorkouts both accept an optional `since:` date that
-/// callers should set to lastSyncDate to avoid re-processing old activities.
+/// lastSyncKey. buildPreview/importWorkouts both accept an optional since: date.
 ///
 /// HealthKit setup (done once in Xcode):
 ///   • Target → Signing & Capabilities → + Capability → HealthKit
@@ -76,7 +93,7 @@ final class HealthKitImporter {
     let modelContext: ModelContext
 
     /// UserDefaults key storing the sync watermark (TimeInterval since 1970).
-    static let lastSyncKey = "garminHealthKitLastSyncDate"
+    static let lastSyncKey = "healthKitLastSyncDate"
 
     /// The two HealthKit types VibeMap reads. Share access only — VibeMap never writes to Health.
     static let readTypes: Set<HKObjectType> = [
@@ -107,11 +124,13 @@ final class HealthKitImporter {
         try await healthStore.requestAuthorization(toShare: [], read: Self.readTypes)
     }
 
-    // MARK: - Fetch Garmin workouts (metadata only)
+    // MARK: - Fetch workouts (metadata only)
 
-    /// Returns all workouts whose source is Garmin Connect, optionally filtered by start date.
-    /// Garmin Connect identifies itself with a bundle ID and app name containing "garmin".
-    func fetchGarminWorkouts(since date: Date? = nil) async throws -> [HKWorkout] {
+    /// Returns all workouts from any source, optionally filtered by start date.
+    /// No source filter is applied here — all apps (Komoot, Apple Fitness, Strava,
+    /// Garmin Connect, etc.) are included. The import step skips any workout whose
+    /// source app did not write HKWorkoutRoute GPS data.
+    func fetchWorkouts(since date: Date? = nil) async throws -> [HKWorkout] {
         let predicate: NSPredicate? = date.map {
             HKQuery.predicateForSamples(withStart: $0, end: nil, options: .strictStartDate)
         }
@@ -125,12 +144,7 @@ final class HealthKitImporter {
                                                     ascending: true)]
             ) { _, samples, error in
                 if let error = error { continuation.resume(throwing: error); return }
-                let garmin = (samples as? [HKWorkout] ?? []).filter { workout in
-                    let id   = workout.sourceRevision.source.bundleIdentifier.lowercased()
-                    let name = workout.sourceRevision.source.name.lowercased()
-                    return id.contains("garmin") || name.contains("garmin")
-                }
-                continuation.resume(returning: garmin)
+                continuation.resume(returning: samples as? [HKWorkout] ?? [])
             }
             healthStore.execute(query)
         }
@@ -139,9 +153,9 @@ final class HealthKitImporter {
     // MARK: - Preview (no DB writes)
 
     /// Builds a preview from workout metadata. Fast — does not query GPS routes.
-    func buildPreview(since date: Date? = nil) async throws -> GarminSyncPreview {
-        let workouts = try await fetchGarminWorkouts(since: date)
-        return GarminSyncPreview(workouts: workouts)
+    func buildPreview(since date: Date? = nil) async throws -> HealthSyncPreview {
+        let workouts = try await fetchWorkouts(since: date)
+        return HealthSyncPreview(workouts: workouts)
     }
 
     // MARK: - Import (DB writes)
@@ -149,43 +163,50 @@ final class HealthKitImporter {
     /// Fetches GPS routes for the supplied workouts, converts to H3 hexes, and inserts into SwiftData.
     /// Only hexes not already in the database are written. On success, advances the sync watermark.
     ///
-    /// If workoutsWithRoutes == 0 in the returned result, Garmin Connect is syncing workout
-    /// summaries but not GPS track data to HealthKit. In that case the caller should direct
-    /// the user to export GPX files from Garmin Connect instead.
-    func importWorkouts(_ workouts: [HKWorkout]) async throws -> GarminSyncResult {
+    /// Workouts from apps that don't write HKWorkoutRoute (e.g. Garmin Connect) are silently
+    /// skipped; their source names appear in the result so the UI can explain what happened.
+    func importWorkouts(_ workouts: [HKWorkout]) async throws -> HealthSyncResult {
         guard !workouts.isEmpty else {
-            return GarminSyncResult(newHexCount: 0, newRegionCount: 0,
-                                    workoutsProcessed: 0, workoutsWithRoutes: 0)
+            return HealthSyncResult(newHexCount: 0, newRegionCount: 0,
+                                    workoutsProcessed: 0, workoutsWithRoutes: 0,
+                                    sourcesWithHexes: [])
         }
 
-        // 1. Collect all CLLocation objects across all workout routes. Count how many workouts
-        //    actually have route data so we can surface a useful diagnostic when it's 0.
-        var rawLocations: [(coordinate: CLLocationCoordinate2D, date: Date)] = []
+        // 1. Collect all CLLocation objects, tracking which source apps have route data.
+        var rawLocations: [(coordinate: CLLocationCoordinate2D, date: Date, sourceName: String)] = []
         var workoutsWithRoutes = 0
         for workout in workouts {
             let locations = try await fetchLocations(for: workout)
             if !locations.isEmpty {
                 workoutsWithRoutes += 1
+                let sourceName = workout.sourceRevision.source.name
                 for loc in locations {
-                    rawLocations.append((loc.coordinate, loc.timestamp))
+                    rawLocations.append((loc.coordinate, loc.timestamp, sourceName))
                 }
             }
         }
 
-        // No route data at all — return gracefully so the UI can show a targeted message.
-        // This is the expected outcome when Garmin Connect is the source: it writes workout
-        // summaries to HealthKit but does not attach HKWorkoutRoute GPS track data.
+        print("📍 Health sync: \(workoutsWithRoutes)/\(workouts.count) workouts had GPS routes, " +
+              "\(rawLocations.count) total GPS points")
+
         guard !rawLocations.isEmpty else {
-            print("⚠️ Garmin sync: \(workouts.count) workout(s) found, 0 had GPS route data. " +
-                  "Garmin Connect does not sync GPS routes to HealthKit. " +
-                  "Export GPX files from Garmin Connect instead.")
-            return GarminSyncResult(newHexCount: 0, newRegionCount: 0,
-                                    workoutsProcessed: workouts.count, workoutsWithRoutes: 0)
+            // All sources synced summaries only — no GPS track data available.
+            let sourceList = workouts
+                .map { $0.sourceRevision.source.name }
+                .reduce(into: [String: Int]()) { $0[$1, default: 0] += 1 }
+                .map { "\($0.key) (\($0.value))" }
+                .joined(separator: ", ")
+            print("⚠️ No HKWorkoutRoute data from any source. Sources: \(sourceList)")
+            return HealthSyncResult(newHexCount: 0, newRegionCount: 0,
+                                    workoutsProcessed: workouts.count, workoutsWithRoutes: 0,
+                                    sourcesWithHexes: [])
         }
 
         // 2. Coordinate → H3 conversion off the main thread (CPU-bound).
         //    Mirrors the GPXImporter pipeline exactly: consecutive dedup + set dedup.
-        typealias PendingHex = (index: String, resolution: Int, regionID: String, date: Date)
+        //    Carries the source name through so we can count hexes per source.
+        typealias PendingHex = (index: String, resolution: Int, regionID: String,
+                                date: Date, sourceName: String)
         let pendingHexes: [PendingHex] = await Task.detached(priority: .userInitiated) {
             var result: [PendingHex] = []
             var seenIndices = Set<String>()
@@ -210,23 +231,23 @@ final class HealthKitImporter {
                 ) else { continue }
 
                 let activeHex = regionData.matchedHex
-                // lastHex: consecutive duplicate (dense GPS trace while standing still)
-                // seenIndices: non-consecutive revisit within this import batch
                 guard activeHex != lastHex, !seenIndices.contains(activeHex) else {
                     lastHex = activeHex
                     continue
                 }
                 lastHex = activeHex
                 seenIndices.insert(activeHex)
-                result.append((activeHex, regionData.resolution, regionData.regionID, item.date))
+                result.append((activeHex, regionData.resolution, regionData.regionID,
+                               item.date, item.sourceName))
             }
             return result
         }.value
 
         guard !pendingHexes.isEmpty else {
-            return GarminSyncResult(newHexCount: 0, newRegionCount: 0,
+            return HealthSyncResult(newHexCount: 0, newRegionCount: 0,
                                     workoutsProcessed: workouts.count,
-                                    workoutsWithRoutes: workoutsWithRoutes)
+                                    workoutsWithRoutes: workoutsWithRoutes,
+                                    sourcesWithHexes: [])
         }
 
         // 3. One batch fetch to find hexes already in SwiftData
@@ -243,6 +264,7 @@ final class HealthKitImporter {
         var regionCache    = [String: RegionExploration]()
         var newHexCount    = 0
         var newRegionCount = 0
+        var hexesPerSource = [String: Int]()
 
         for item in pendingHexes where !alreadyExplored.contains(item.index) {
             let hex = ExploredHex(h3Index: item.index, resolution: item.resolution,
@@ -251,6 +273,7 @@ final class HealthKitImporter {
             hex.lastVisited  = item.date
             modelContext.insert(hex)
             newHexCount += 1
+            hexesPerSource[item.sourceName, default: 0] += 1
 
             if let cached = regionCache[item.regionID] {
                 cached.addExploredHex(item.index)
@@ -282,17 +305,21 @@ final class HealthKitImporter {
 
         try modelContext.save()
 
-        // Advance the watermark so the next sync only fetches newer activities
+        // Advance the watermark to the latest workout end date
         if let latestEnd = workouts.map({ $0.endDate }).max() {
             UserDefaults.standard.set(latestEnd.timeIntervalSince1970, forKey: Self.lastSyncKey)
         }
 
-        print("✅ Garmin sync: \(newHexCount) new hexes, \(newRegionCount) new regions " +
-              "from \(workoutsWithRoutes)/\(workouts.count) workouts with routes, " +
-              "\(rawLocations.count) GPS points")
-        return GarminSyncResult(newHexCount: newHexCount, newRegionCount: newRegionCount,
+        let sourcesWithHexes = hexesPerSource
+            .map { (name: $0.key, hexCount: $0.value) }
+            .sorted { $0.hexCount > $1.hexCount }
+
+        print("✅ Health sync: \(newHexCount) new hexes, \(newRegionCount) new regions — " +
+              sourcesWithHexes.map { "\($0.name): \($0.hexCount)" }.joined(separator: ", "))
+        return HealthSyncResult(newHexCount: newHexCount, newRegionCount: newRegionCount,
                                 workoutsProcessed: workouts.count,
-                                workoutsWithRoutes: workoutsWithRoutes)
+                                workoutsWithRoutes: workoutsWithRoutes,
+                                sourcesWithHexes: sourcesWithHexes)
     }
 
     // MARK: - Private: GPS route fetching

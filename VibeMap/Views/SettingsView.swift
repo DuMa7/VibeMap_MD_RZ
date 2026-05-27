@@ -26,17 +26,17 @@ struct SettingsView: View {
     @State private var showGPXPreview = false
     @State private var isImportingGPX = false
 
-    // Garmin / HealthKit sync
+    // Apple Health sync (Komoot, Apple Fitness, Strava, etc.)
     // Watermark stored as Double (TimeInterval) because @AppStorage doesn't support Date directly.
     // HealthKitImporter writes the same key via UserDefaults; @AppStorage observes it automatically.
-    @AppStorage(HealthKitImporter.lastSyncKey) private var garminLastSyncTimestamp: Double = 0
-    @State private var garminPreview: GarminSyncPreview?
-    @State private var showGarminPreview = false
-    @State private var isLoadingGarminPreview = false
-    @State private var isSyncingGarmin = false
+    @AppStorage(HealthKitImporter.lastSyncKey) private var healthLastSyncTimestamp: Double = 0
+    @State private var healthPreview: HealthSyncPreview?
+    @State private var showHealthPreview = false
+    @State private var isLoadingHealthPreview = false
+    @State private var isSyncingHealth = false
 
-    var garminLastSyncDate: Date? {
-        garminLastSyncTimestamp > 0 ? Date(timeIntervalSince1970: garminLastSyncTimestamp) : nil
+    var healthLastSyncDate: Date? {
+        healthLastSyncTimestamp > 0 ? Date(timeIntervalSince1970: healthLastSyncTimestamp) : nil
     }
 
     // Feedback
@@ -107,49 +107,49 @@ struct SettingsView: View {
                     Text("Import .gpx files from Garmin, Strava, Apple Fitness, AllTrails, and more to retroactively scratch hexes.")
                 }
 
-                // MARK: Garmin sync
+                // MARK: Apple Health sync
                 if HealthKitImporter.isAvailable {
                     Section {
                         Button {
-                            isLoadingGarminPreview = true
+                            isLoadingHealthPreview = true
                             Task {
                                 do {
                                     let importer = HealthKitImporter(modelContext: modelContext)
                                     try await importer.requestAuthorization()
-                                    let preview = try await importer.buildPreview(since: garminLastSyncDate)
+                                    let preview = try await importer.buildPreview(since: healthLastSyncDate)
                                     if preview.workoutCount == 0 {
-                                        alertMessage = garminLastSyncDate == nil
-                                            ? "No Garmin activities found in Apple Health. Open Garmin Connect and make sure it is syncing to Health."
-                                            : "No new Garmin activities since \(garminLastSyncDate!.formatted(date: .abbreviated, time: .omitted))."
+                                        alertMessage = healthLastSyncDate == nil
+                                            ? "No activities found in Apple Health."
+                                            : "No new activities since \(healthLastSyncDate!.formatted(date: .abbreviated, time: .omitted))."
                                         showAlert = true
                                     } else {
-                                        garminPreview = preview
-                                        showGarminPreview = true
+                                        healthPreview = preview
+                                        showHealthPreview = true
                                     }
                                 } catch {
-                                    alertMessage = "Could not access Garmin activities: \(error.localizedDescription)"
+                                    alertMessage = "Could not access Apple Health: \(error.localizedDescription)"
                                     showAlert = true
                                 }
-                                isLoadingGarminPreview = false
+                                isLoadingHealthPreview = false
                             }
                         } label: {
-                            if isLoadingGarminPreview {
+                            if isLoadingHealthPreview {
                                 HStack {
                                     ProgressView().padding(.trailing, 4)
-                                    Text("Checking Garmin…")
+                                    Text("Checking Health…")
                                 }
-                            } else if isSyncingGarmin {
+                            } else if isSyncingHealth {
                                 HStack {
                                     ProgressView().padding(.trailing, 4)
                                     Text("Syncing…")
                                 }
                             } else {
-                                Label("Sync from Garmin", systemImage: "figure.run.circle.fill")
+                                Label("Sync GPS Activities", systemImage: "heart.circle.fill")
                             }
                         }
-                        .disabled(isLoadingGarminPreview || isSyncingGarmin)
+                        .disabled(isLoadingHealthPreview || isSyncingHealth)
 
-                        if let lastSync = garminLastSyncDate {
+                        if let lastSync = healthLastSyncDate {
                             HStack {
                                 Label("Last Synced", systemImage: "checkmark.circle")
                                     .foregroundStyle(.secondary)
@@ -160,9 +160,9 @@ struct SettingsView: View {
                             }
                         }
                     } header: {
-                        Text("Garmin Connect")
+                        Text("Apple Health")
                     } footer: {
-                        Text("Requires Garmin Connect → Apple Health sync. Note: Garmin Connect syncs activity summaries but not GPS routes to Apple Health — if no hexes appear, use "Import GPX Tracks" instead.")
+                        Text("Imports GPS routes from apps that write workout data to Apple Health: Komoot, Apple Fitness, Strava, and others. Apps that only sync summaries (e.g. Garmin Connect) won't produce hexes — use "Import GPX Tracks" for those.")
                     }
                 }
 
@@ -332,36 +332,38 @@ struct SettingsView: View {
                     showAlert = true
                 }
             }
-            // MARK: Garmin preview sheet
-            .sheet(isPresented: $showGarminPreview) {
-                if let preview = garminPreview {
-                    GarminSyncPreviewSheet(preview: preview, lastSyncDate: garminLastSyncDate) {
-                        showGarminPreview = false
-                        isSyncingGarmin = true
+            // MARK: Apple Health preview sheet
+            .sheet(isPresented: $showHealthPreview) {
+                if let preview = healthPreview {
+                    HealthSyncPreviewSheet(preview: preview, lastSyncDate: healthLastSyncDate) {
+                        showHealthPreview = false
+                        isSyncingHealth = true
                         Task {
                             do {
                                 let importer = HealthKitImporter(modelContext: modelContext)
                                 let result = try await importer.importWorkouts(preview.workouts)
                                 // @AppStorage observes the same key; read back explicitly for safety
-                                garminLastSyncTimestamp = UserDefaults.standard.double(
+                                healthLastSyncTimestamp = UserDefaults.standard.double(
                                     forKey: HealthKitImporter.lastSyncKey
                                 )
                                 let w = result.workoutsProcessed
                                 if result.workoutsWithRoutes == 0 {
-                                    // Garmin Connect found but contains no HKWorkoutRoute data
-                                    alertMessage = "\(w) activit\(w == 1 ? "y" : "ies") found in Apple Health, but none contain GPS route data.\n\nGarmin Connect syncs activity summaries to Apple Health, not the full GPS track. Use "Import GPX Tracks" below — export the GPX file from the Garmin Connect app (Activity → ⋯ → Export) or garmin.com."
+                                    alertMessage = "\(w) activit\(w == 1 ? "y" : "ies") found but none contained GPS route data. Apps that only sync summaries to Apple Health (e.g. Garmin Connect) won't produce hexes — use "Import GPX Tracks" instead."
                                 } else if result.newHexCount == 0 {
                                     alertMessage = "All \(w) activit\(w == 1 ? "y was" : "ies were") already on your map — nothing new to add."
                                 } else {
                                     let h = result.newHexCount
                                     let r = result.newRegionCount
-                                    alertMessage = "Synced \(h) new hex\(h == 1 ? "" : "es") across \(r) new town\(r == 1 ? "" : "s") from \(w) activit\(w == 1 ? "y" : "ies")."
+                                    let sources = result.sourcesWithHexes
+                                        .map { "\($0.name): \($0.hexCount)" }
+                                        .joined(separator: ", ")
+                                    alertMessage = "Synced \(h) new hex\(h == 1 ? "" : "es") across \(r) new town\(r == 1 ? "" : "s").\n\(sources)"
                                 }
                             } catch {
                                 alertMessage = "Sync failed: \(error.localizedDescription)"
                             }
-                            isSyncingGarmin = false
-                            garminPreview = nil
+                            isSyncingHealth = false
+                            healthPreview = nil
                             showAlert = true
                         }
                     }
@@ -597,10 +599,10 @@ private struct RestorePreviewSheet: View {
     }
 }
 
-// MARK: - Garmin Sync Preview Sheet
+// MARK: - Health Sync Preview Sheet
 
-private struct GarminSyncPreviewSheet: View {
-    let preview: GarminSyncPreview
+private struct HealthSyncPreviewSheet: View {
+    let preview: HealthSyncPreview
     let lastSyncDate: Date?
     let onConfirm: () -> Void
 
@@ -609,13 +611,13 @@ private struct GarminSyncPreviewSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Image(systemName: "figure.run.circle.fill")
+                Image(systemName: "heart.circle.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(.orange)
                     .padding(.top, 32)
                     .padding(.bottom, 20)
 
-                Text("Garmin Activities")
+                Text("GPS Activities")
                     .font(.title2).bold()
                     .multilineTextAlignment(.center)
 
@@ -629,8 +631,9 @@ private struct GarminSyncPreviewSheet: View {
                         .padding(.top, 4)
                 }
 
-                Spacer().frame(height: 28)
+                Spacer().frame(height: 20)
 
+                // Stats row
                 HStack(spacing: 16) {
                     statCard(
                         value: "\(preview.workoutCount)",
@@ -653,18 +656,46 @@ private struct GarminSyncPreviewSheet: View {
                 }
                 .padding(.horizontal)
 
+                // Source breakdown — shows which apps contributed activities
+                if preview.sourceBreakdown.count > 1 {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(preview.sourceBreakdown, id: \.name) { source in
+                            HStack {
+                                Text(source.name)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                Text("\(source.count) activit\(source.count == 1 ? "y" : "ies")")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(Color.gray.opacity(0.08))
+                    .cornerRadius(12)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 16)
+                } else if let source = preview.sourceBreakdown.first {
+                    Text("From \(source.name)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 12)
+                }
+
                 Group {
                     if let lastSync = lastSyncDate {
                         Text("Activities since \(lastSync.formatted(date: .abbreviated, time: .omitted)).")
                     } else {
-                        Text("All Garmin activities in Apple Health will be scratched onto your map.")
+                        Text("Only activities with GPS route data will produce hexes.")
                     }
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
-                .padding(.top, 20)
+                .padding(.top, 12)
 
                 Spacer()
 
@@ -690,7 +721,7 @@ private struct GarminSyncPreviewSheet: View {
             }
             .navigationBarHidden(true)
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 
     private func statCard(value: String, label: String, icon: String) -> some View {
