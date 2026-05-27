@@ -229,6 +229,7 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 |---|---|
 | `visitCount` vestigial property | Always 1 on every `ExploredHex`. `recordVisit()` has been removed. The field is kept in the model to avoid a SwiftData schema migration; remove it with a `VersionedSchema` bump when the model is next versioned. |
 | `LocationPoint` model unused | Defined and included in ModelContainer but never written to. Reserved for future breadcrumb feature. |
+| Legacy res-9 hexes | All recording paths (live GPS, GPX import, HealthKit sync) now always save `resolution: 10`. Older installs may have a small number of res-9 records for boundary areas. `rebuildMidZoomOutlines` keeps a legacy branch (`if hex.resolution == 9`) to handle them correctly at all zoom levels. |
 | `currentZoomPercentage` does a linear scan | At canton zoom, finds the canton by a `.first(where:)` scan over `layerManager.cantons` on every render. Fine for 26 cantons, worth caching if canton list grows. |
 | `LiveLocationDetector` not wired to HUD | Detects current municipality in real time but `ContentView` uses the crosshair-based `updateCenteredRegion` instead. Either wire it or remove it. |
 | No tests on core logic | `HexMerger`, `LocationManager` session lifecycle, and `GPXImporter` batch pipeline have no unit tests. The algorithm-heavy paths are the highest risk. |

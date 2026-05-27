@@ -142,9 +142,13 @@ struct MapView: View {
     /// No viewport culling: at mid-zoom the visible area spans several km and the
     /// promoted res-9 set is already ~7× smaller than the full res-10 set.
     /// Uses its own task handle so street-zoom pans cannot cancel it.
+    ///
+    /// All hexes are stored at res-10, so this always promotes via cellToParent.
+    /// The resolution check is kept for safety against any legacy res-9 records
+    /// that may exist in older installs.
     private func rebuildMidZoomOutlines(_ hexes: [ExploredHex]) {
         let res9Indices = Array(Set(hexes.compactMap { hex -> String? in
-            if hex.resolution == 9 { return hex.h3Index }
+            if hex.resolution == 9 { return hex.h3Index }   // legacy record — use as-is
             return H3Wrapper.cellToParent(h3Index: hex.h3Index, parentRes: 9)
         }))
 

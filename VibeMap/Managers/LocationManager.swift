@@ -241,9 +241,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         let lonRads = location.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
         
-        // Generate both res-10 (~15 m² cells, primary) and res-9 (~100 m² cells, fallback).
-        // The offline database was built at res-10 but some boundary hexes are only indexed
-        // at res-9; passing both lets OfflineDatabase return whichever it finds first.
+        // Generate both res-10 (~15 m cells, primary) and res-9 (parent, fallback).
+        // We pass both to OfflineDatabase so the lookup can find a regionID even when
+        // a boundary area is only indexed at res-9. The res-10 index is always what gets
+        // saved — consistent cell granularity regardless of which DB row was matched.
         var h3Index10: H3Index = 0
         var h3Index9: H3Index = 0
         latLngToCell(&coord, Int32(10), &h3Index10)
@@ -254,7 +255,8 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
 
         // SQLite lookup is synchronous but takes <1 ms on the bundled database (no network)
         if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
-            let activeHex = regionData.matchedHex
+            // Always use the res-10 index as the canonical hex — never the matched DB row's index
+            let activeHex = hex10
 
             // 3. Cheap geofence: same hex as last update — skip immediately
             guard activeHex != lastSavedHex else { return }
@@ -265,9 +267,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                 return
             }
 
-            print("📍 New hex entered: \(activeHex) (Res \(regionData.resolution))")
+            print("📍 New hex entered: \(activeHex) (res-10)")
             lastSavedHex = activeHex
-            pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
+            pendingHexes[activeHex] = (resolution: 10, regionID: regionData.regionID)
 
             // Foreground: flush every new hex immediately so the map updates in real time.
             // Background: flush immediately too — background execution time is limited and
@@ -308,12 +310,12 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         let hex9 = String(h3Index9, radix: 16)
         
         if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
-            let activeHex = regionData.matchedHex
+            let activeHex = hex10   // always res-10
 
             if activeHex != lastSavedHex {
                 lastSavedHex = activeHex
                 if !exploredHexSet.contains(activeHex) {
-                    pendingHexes[activeHex] = (resolution: regionData.resolution, regionID: regionData.regionID)
+                    pendingHexes[activeHex] = (resolution: 10, regionID: regionData.regionID)
                     flushPendingData()
                 }
             }

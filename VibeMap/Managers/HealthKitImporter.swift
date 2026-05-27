@@ -230,14 +230,16 @@ final class HealthKitImporter {
                     res10: hex10, res9: hex9
                 ) else { continue }
 
-                let activeHex = regionData.matchedHex
+                // Always use the res-10 index — regionID comes from the DB match
+                // (which may have been a res-9 fallback for boundary areas).
+                let activeHex = hex10
                 guard activeHex != lastHex, !seenIndices.contains(activeHex) else {
                     lastHex = activeHex
                     continue
                 }
                 lastHex = activeHex
                 seenIndices.insert(activeHex)
-                result.append((activeHex, regionData.resolution, regionData.regionID,
+                result.append((activeHex, 10, regionData.regionID,
                                item.date, item.sourceName))
             }
             return result

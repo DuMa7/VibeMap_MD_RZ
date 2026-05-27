@@ -224,7 +224,9 @@ final class GPXImporter {
                     continue
                 }
 
-                let activeHex = regionData.matchedHex
+                // Always use the res-10 index — regionID comes from the DB match
+                // (which may have been a res-9 fallback for boundary areas).
+                let activeHex = hex10
                 // lastHex catches consecutive duplicates cheaply (dense GPS tracks from slow movement).
                 // seenIndices catches non-consecutive revisits within the same import batch.
                 // Together they avoid storing multiple entries for the same hex in pendingHexes.
@@ -235,7 +237,7 @@ final class GPXImporter {
 
                 lastHex = activeHex
                 seenIndices.insert(activeHex)
-                result.append((activeHex, regionData.resolution, regionData.regionID, point.timestamp))
+                result.append((activeHex, 10, regionData.regionID, point.timestamp))
             }
 
             return result
