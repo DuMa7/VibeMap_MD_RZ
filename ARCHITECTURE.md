@@ -74,7 +74,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | File | Lines | Role |
 |---|---|---|
 | `ContentView.swift` | 923 | Central orchestrator. Owns all top-level state: map camera, HUD pill data, achievement queue, session prompt, layer settings. Hosts the splash/map transition and all overlay sheets. Contains the crosshair region lookup pipeline (`updateCenteredRegion`) and the canton count cache. |
-| `MapView.swift` | 210 | Renders the `Map`. Owns the zoom-level rendering ladder and a single viewport-culled outline rebuild pipeline (`rebuildHexOutlines`). Individual hex outlines (res-10 only) use a flat `orange.opacity(0.4)`; aggregated municipality and canton polygons scale opacity with exploration % (floor 0.15, ceiling 0.6). Also owns region colour caches. |
+| `MapView.swift` | 230 | Renders the `Map`. Owns the zoom-level rendering ladder, a spatial grid index for fast viewport queries, and a single outline rebuild pipeline (`rebuildHexOutlines`). Individual hex outlines (res-10 only) use a flat `orange.opacity(0.4)`; aggregated municipality and canton polygons scale opacity with exploration % (floor 0.15, ceiling 0.6). Also owns region colour caches. |
 | `SettingsView.swift` | 600 | Backup export/import UI, GPX import UI, Garmin Connect sync UI, achievement list, data clear. Manages async preview → confirm workflows for all import types. |
 | `PassportView.swift` | 210 | Canton-by-canton progress. Computes visited/total municipalities per canton. Maps Swiss federal canton IDs (KTNR) to ISO abbreviations. |
 | `SplashView.swift` | 122 | 2.5 s launch animation. Rotating hex ring + spinning globe. Dismissed by ContentView with a fade. |
@@ -146,27 +146,35 @@ stopSession()
 ### Map rendering pipeline
 
 ```
-exploredHexes (@Query, SwiftData) or currentSpan/centerCoordinate changes
-  └─ rebuildHexOutlines()    ← only if currentSpan < 0.2; single task handle
-       └─ viewportFilteredIndices()  ← 2× buffer; H3Wrapper.cellCenter per hex
-       └─ HexMerger.mergeHexOutlines(culledIndices) → hexOutlines
-       └─ adaptive debounce: 300 ms if < 1 000 culled hexes, 800 ms otherwise
+exploredHexes changes
+  └─ rebuildSpatialGrid()   ← detached; H3Wrapper.cellCenter per hex, once
+       └─ spatialGrid: [GridKey: [String]]  ← 0.1° buckets, ~7 km each
+       └─ on complete → rebuildHexOutlines() if span < 0.15
 
-currentSpan < 0.2   → hexOutlines rendered as MapPolygon (res-10, flat orange.opacity(0.4))
-currentSpan 0.2–2.0 → municipality GeoJSON polygons (opacity = max(0.15, explorationPct × 0.6))
+pan or zoom (span/centre changes)
+  └─ rebuildHexOutlines()   ← only if currentSpan < 0.15
+       └─ estimate visible count from bucket sizes — O(~36) integer adds, main thread
+       └─ adaptive debounce: 200 ms if < 1 000 hexes, 500 ms otherwise
+       └─ detached task: iterate buckets in buffered viewport → collect indices
+       └─ detached task: HexMerger.mergeHexOutlines(indices) → hexOutlines
+
+currentSpan < 0.15   → hexOutlines (res-10, flat orange.opacity(0.4))
+currentSpan 0.15–2.0 → municipality GeoJSON polygons (opacity = max(0.15, explorationPct × 0.6))
 currentSpan 2.0–10.0 → canton GeoJSON polygons (opacity = max(0.15, visitedMunis/totalMunis × 0.6))
-currentSpan ≥ 10.0 → nothing
+currentSpan ≥ 10.0   → nothing
 ```
 
-Viewport culling: `viewportFilteredIndices(from:center:span:)` filters hexes by centroid
-bounding box using a 2× span buffer on each side. Only hexes whose centroid falls within
-the enlarged viewport are passed to HexMerger. Hexes with no computable centroid are
-included as a safe fallback.
+**Spatial grid**: bucket size 0.1° ≈ 7 km. At span 0.15 with 2× buffer the viewport covers
+0.6°×0.6° → ~36 buckets, regardless of total hex count. Lookup is O(36 × avg_per_bucket)
+instead of O(total_hexes). At 50k hexes this is a ~30× speedup over the previous linear scan.
+
+**Main-thread cost per gesture event**: O(1) task cancel/start + O(36) integer additions for
+the count estimate. All H3 calls and HexMerger run in detached tasks.
 
 Rebuild triggers:
-- `onChange(of: exploredHexes)` — new hex recorded or imported
-- `onChange(of: currentSpan)` — pinch-zoom (no centre change)
-- `onChange(of: centerCoordinate)` — pan (no span change)
+- `onChange(of: exploredHexes)` — hex data changed (grid + outlines)
+- `onChange(of: currentSpan)` — pinch-zoom, viewport changed (outlines only)
+- `onChange(of: centerCoordinate)` — pan, viewport changed (outlines only)
 
 ### Crosshair region lookup (HUD pill)
 
