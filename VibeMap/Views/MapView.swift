@@ -24,8 +24,11 @@ struct MapView: View {
     /// Fast lookup for region colour — avoids O(N) scan per visible municipality per render
     @State private var regionLookup: [String: RegionExploration] = [:]
 
-    /// Handle for the in-flight debounced outline rebuild — cancelled when a newer change arrives
-    @State private var outlineTask: Task<Void, Never>?
+    /// Handle for the in-flight street-zoom (res-10) outline rebuild
+    @State private var streetOutlineTask: Task<Void, Never>?
+
+    /// Handle for the in-flight mid-zoom (res-9) outline rebuild
+    @State private var midZoomOutlineTask: Task<Void, Never>?
 
     var exploredHexes: [ExploredHex]
     var regions: [RegionExploration]
@@ -84,72 +87,72 @@ struct MapView: View {
         }
         .onAppear {
             rebuildRegionCaches()
-            rebuildOutlines(exploredHexes)
+            rebuildMidZoomOutlines(exploredHexes)
+            if currentSpan < 0.02 { rebuildStreetOutlines(exploredHexes) }
         }
         .onChange(of: exploredHexes) { _, newHexes in
-            rebuildOutlines(newHexes)
+            // Keep both outline sets current regardless of the active zoom level —
+            // the user may zoom between layers at any time.
+            rebuildMidZoomOutlines(newHexes)
+            if currentSpan < 0.02 { rebuildStreetOutlines(newHexes) }
         }
         .onChange(of: regions) { _, _ in
             rebuildRegionCaches()
         }
-        // When the user pans while at street zoom the set of visible hexes changes,
-        // so rebuild the outline for the new viewport position.
+        // Zoom trigger: fires when the user pinch-zooms (span changes).
+        // Handles the common case where the map centre stays constant —
+        // onChange(of: centerCoordinate) would not fire for a pure zoom gesture.
+        .onChange(of: currentSpan) { _, newSpan in
+            if newSpan < 0.02 { rebuildStreetOutlines(exploredHexes) }
+        }
+        // Pan trigger: fires when the user pans at street zoom (centre changes, span stays).
         .onChange(of: centerCoordinate) { _, _ in
-            if currentSpan < 0.02 {
-                rebuildOutlines(exploredHexes)
-            }
+            if currentSpan < 0.02 { rebuildStreetOutlines(exploredHexes) }
         }
     }
 
-    // MARK: - Outline Builder
+    // MARK: - Outline Builders
 
-    /// Merges explored hexes into cluster outlines off the main thread.
-    /// At street zoom the input is restricted to the visible viewport to keep
-    /// HexMerger's O(N) work proportional to what's on screen, not the full history.
-    private func rebuildOutlines(_ hexes: [ExploredHex]) {
-        // At street zoom, cull to the visible viewport before extracting index strings.
-        // At wider zooms, pass everything — municipality/canton layers are GeoJSON-driven
-        // and don't go through HexMerger, so no culling is needed there.
-        let allIndices: [String]
-        if currentSpan < 0.02, let center = centerCoordinate {
-            allIndices = viewportFilteredIndices(from: hexes, center: center, span: currentSpan)
-        } else {
-            allIndices = hexes.map { $0.h3Index }
+    /// Builds viewport-culled res-10 outlines for the street-zoom layer (span < 0.02).
+    /// Only called when already at street zoom — never precomputed for other levels.
+    /// Uses its own task handle so mid-zoom rebuilds cannot cancel it.
+    private func rebuildStreetOutlines(_ hexes: [ExploredHex]) {
+        guard let center = centerCoordinate else { return }
+        let indices = viewportFilteredIndices(from: hexes, center: center, span: currentSpan)
+        // Adaptive debounce: post-cull count is small at street zoom → fast and responsive.
+        let debounceNs: UInt64 = indices.count < 500 ? 300_000_000 : 1_500_000_000
+
+        streetOutlineTask?.cancel()
+        streetOutlineTask = Task {
+            do { try await Task.sleep(nanoseconds: debounceNs) } catch { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                HexMerger.mergeHexOutlines(indices)
+            }.value
+            guard !Task.isCancelled else { return }
+            hexOutlines = result
+            print("📐 Street outlines: \(result.count) rings from \(indices.count) visible hexes (\(hexes.count) total)")
         }
+    }
 
-        // res-9 covers a much wider area at mid-zoom; no viewport culling needed since
-        // the promoted set is already ~7× smaller than the full res-10 set.
+    /// Builds global res-9 outlines for the mid-zoom layer (span 0.02 – 0.2).
+    /// No viewport culling: at mid-zoom the visible area spans several km and the
+    /// promoted res-9 set is already ~7× smaller than the full res-10 set.
+    /// Uses its own task handle so street-zoom pans cannot cancel it.
+    private func rebuildMidZoomOutlines(_ hexes: [ExploredHex]) {
         let res9Indices = Array(Set(hexes.compactMap { hex -> String? in
             if hex.resolution == 9 { return hex.h3Index }
             return H3Wrapper.cellToParent(h3Index: hex.h3Index, parentRes: 9)
         }))
 
-        // Adaptive debounce: after viewport culling, allIndices is small during live
-        // exploration at street zoom, so 300 ms feels responsive. The longer debounce
-        // protects the CPU when processing a large viewport or the full res-9 set.
-        let debounceNs: UInt64 = allIndices.count < 500 ? 300_000_000 : 1_500_000_000
-
-        outlineTask?.cancel()
-        outlineTask = Task {
-            do {
-                try await Task.sleep(nanoseconds: debounceNs)
-            } catch {
-                return // cancelled before debounce elapsed — a newer change arrived
-            }
-
-            async let all  = Task.detached(priority: .userInitiated) {
-                HexMerger.mergeHexOutlines(allIndices)
-            }.value
-            async let res9 = Task.detached(priority: .userInitiated) {
+        midZoomOutlineTask?.cancel()
+        midZoomOutlineTask = Task {
+            do { try await Task.sleep(nanoseconds: 1_500_000_000) } catch { return }
+            let result = await Task.detached(priority: .userInitiated) {
                 HexMerger.mergeHexOutlines(res9Indices)
             }.value
-            let allResult  = await all
-            let res9Result = await res9
-
             guard !Task.isCancelled else { return }
-            hexOutlines  = allResult
-            res9Outlines = res9Result
-            print("📐 Merged outlines: \(hexOutlines.count) rings from \(allIndices.count) visible hexes (\(hexes.count) total)")
+            res9Outlines = result
+            print("📐 Mid-zoom outlines: \(result.count) rings from \(res9Indices.count) res-9 cells")
         }
     }
 
