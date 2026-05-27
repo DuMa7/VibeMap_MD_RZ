@@ -1,80 +1,65 @@
-VibeMap 🌍
-VibeMap is an iOS application that gamifies urban exploration. By tracking your location as you move, the app "uncovers" the world on a hexagonal grid, allowing you to visualize your footprint and track exploration statistics for different cities.
+# VibeMap
 
-🚀 Features
-Hexagonal "Fog of War": The world is divided into hexagonal cells (Resolution 10) using Uber's H3 grid system. Hexes light up on the map as you physically visit them.
+An iOS app that gamifies exploring Switzerland on foot. As you walk, H3 hexagonal cells light up on the map. Stats accumulate at municipality, canton, and national level. Past tracks can be imported from GPX files.
 
-City Exploration Stats: The app automatically detects which city you are in and calculates an "Exploration Percentage" based on the city's approximate radius.
+**Platform:** iOS 17+ · **Language:** Swift · **UI:** SwiftUI · **Persistence:** SwiftData + SQLite
 
-Background Tracking: efficient location tracking using "Significant Location Changes" and "Visit Monitoring" to record your exploration even when the app is closed.
+---
 
-Persistent History: All explored hexes and location points are saved locally using SwiftData.
+## Features
 
-Interactive Map: * View your explored territories overlaid on the map.
+- **Hex recording** — GPS fixes are converted to H3 resolution-10 cells (~15 m²) and stored locally. New cells are deduplicated in O(1) using an in-memory set.
+- **Session-based GPS** — tracking only runs during an active "Explore" session; significant-change monitoring handles the rest at minimal battery cost.
+- **Zoom-adaptive overlays** — street zoom shows individual hex outlines; mid-zoom shows coarser res-9 cells; municipality zoom fills visited towns; canton zoom fills visited cantons.
+- **Offline region detection** — a bundled SQLite database maps every Swiss H3 cell to its municipality. No network required.
+- **Live HUD** — the top pill shows the place name and exploration % at the map crosshair, updating on pan and while walking.
+- **Location Details** — tap the pill for municipality hex progress, canton town count, and Swiss canton count.
+- **Canton Passport** — per-canton breakdown of visited municipalities.
+- **Achievements** — 7 badges based on hex count and municipality count, shown as banners with confetti.
+- **GPX import** — parse tracks from Garmin, Strava, AllTrails; preview before committing to the database.
+- **Backup / restore** — full JSON export and import; auto-backup on app background.
 
-Switch between Standard, Satellite, and Imagery map styles.
+---
 
-Centers on your location and tracks movement.
+## Requirements
 
-Detailed Statistics: View total hexes explored, cities visited, and a leaderboard-style list of your most explored cities.
+- iOS 17.0+
+- Xcode 15.0+
+- "Always" location permission (required for background hex recording)
 
-🛠 Tech Stack
-Language: Swift 5.0
+---
 
-UI Framework: SwiftUI
+## Setup
 
-Persistence: SwiftData
+```bash
+git clone <repo-url>
+open VibeMap.xcodeproj
+```
 
-Mapping: MapKit
+Swift Package Manager resolves the H3 dependency automatically. If it doesn't, go to **File → Packages → Resolve Package Versions**.
 
-Location: CoreLocation (Significant Changes & Monitoring Visits)
+---
 
-Concurrency: Swift Concurrency (async/await)
+## Tech stack
 
-State Management: Observation Framework (@Observable)
+| Layer | Technology |
+|---|---|
+| UI | SwiftUI |
+| Persistence | SwiftData (hexes, regions) + SQLite (offline region index) |
+| Location | CoreLocation — `CLLocationManager`, significant-change, visit monitoring |
+| Hex grid | [Uber H3](https://h3geo.org/) via Swift package (resolution 9 and 10) |
+| Mapping | MapKit (`Map`, `MapPolygon`) |
+| Concurrency | Swift Concurrency (`async/await`, `Task.detached`) |
+| State | `@Observable`, `@Query` |
 
-External Dependencies:
+---
 
-swift-h3: A Swift wrapper for the Uber H3 hierarchical geospatial indexing system.
+## Codebase documentation
 
-📱 Requirements
-iOS: 17.0+ (Requires SwiftData and @Observable support).
-
-Xcode: 15.0+
-
-📂 Project Structure
-VibeMapApp.swift: Application entry point; configures the SwiftData ModelContainer.
-
-ContentView.swift: The main UI coordinator. Handles the transition between the Splash Screen and the Map, and displays the exploration stats overlay.
-
-LocationManager.swift: The core logic engine. Handles permissions, background location updates, H3 index conversion, and city detection.
-
-MapView.swift: A SwiftUI wrapper for the map interface. Renders the user's location and the polygons for explored hexes.
-
-H3Wrapper.swift: Helper struct interfacing with the C-based H3 library to convert coordinates to indices and retrieve hexagon boundary vertices.
-
-Models (ExplorationModels.swift, CityExploration.swift):
-
-ExploredHex: Represents a unique H3 index visited by the user.
-
-CityExploration: Tracks stats for a specific city (e.g., total hexes vs. explored hexes).
-
-🔧 Installation
-Clone the repository:
-
-Bash
-git clone <repository-url>
-Open the project: Open VibeMap.xcodeproj in Xcode.
-
-Resolve Dependencies: Xcode should automatically fetch the swift-h3 package via Swift Package Manager. If not, go to File > Packages > Resolve Package Versions.
-
-Permissions: To test the full functionality, you must allow "Always" location access when prompted. This enables the app to track your exploration while it is in the background.
-
-🧩 How It Works
-Grid Generation: When the location manager receives a coordinate, it converts it into an H3 index (a hexadecimal string representing a specific hexagon on the globe).
-
-Data Recording: If the hex hasn't been visited before, it is saved to the SwiftData database.
-
-City Detection: The app performs a reverse geocode lookup to identify the city. It then calculates a theoretical "boundary" for that city (defaulting to a 5km radius) to estimate how much of the city you have "conquered".
-
-Visualization: The MapView fetches the stored hex indices, calculates their polygon vertices using H3Wrapper, and draws them as green overlays on the map.
+See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for:
+- Full file-by-file reference
+- Session recording and flush pipeline
+- Map rendering pipeline and zoom-level logic
+- GPX import pipeline
+- Database schema
+- Known constraints and tech debt
