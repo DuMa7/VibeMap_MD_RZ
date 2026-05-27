@@ -162,7 +162,7 @@ struct SettingsView: View {
                     } header: {
                         Text("Apple Health")
                     } footer: {
-                        Text("Imports GPS routes from apps that write workout data to Apple Health: Komoot, Apple Fitness, Strava, and others. Apps that only sync summaries (e.g. Garmin Connect) won't produce hexes — use "Import GPX Tracks" for those.")
+                        Text("Imports GPS routes from apps that write workout data to Apple Health: Komoot, Apple Fitness, Strava, and others. Apps that only sync summaries (e.g. Garmin Connect) won't produce hexes — use \"Import GPX Tracks\" for those.")
                     }
                 }
 
@@ -348,7 +348,7 @@ struct SettingsView: View {
                                 )
                                 let w = result.workoutsProcessed
                                 if result.workoutsWithRoutes == 0 {
-                                    alertMessage = "\(w) activit\(w == 1 ? "y" : "ies") found but none contained GPS route data. Apps that only sync summaries to Apple Health (e.g. Garmin Connect) won't produce hexes — use "Import GPX Tracks" instead."
+                                    alertMessage = "\(w) activit\(w == 1 ? "y" : "ies") found but none contained GPS route data. Apps that only sync summaries to Apple Health (e.g. Garmin Connect) won\'t produce hexes — use \"Import GPX Tracks\" instead."
                                 } else if result.newHexCount == 0 {
                                     alertMessage = "All \(w) activit\(w == 1 ? "y was" : "ies were") already on your map — nothing new to add."
                                 } else {
