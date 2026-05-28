@@ -86,6 +86,9 @@ struct ContentView: View {
     /// Controls the "Exploring somewhere new today?" launch prompt
     @State private var showExplorationPrompt = false
 
+    /// Controls the "New territory ahead!" prompt triggered by a location move into an unexplored hex
+    @State private var showUnexploredAreaPrompt = false
+
     /// Drives the pulsing animation on the recording dot in the HUD pill
     @State private var recordingPulse: Bool = false
 
@@ -181,6 +184,20 @@ struct ContentView: View {
         .onChange(of: centerCoordinate) { _, newValue in
             if let newValue {
                 updateCenteredRegion(coordinate: newValue)
+            }
+        }
+        // Unexplored-area detection: LocationManager signals when a non-session location
+        // update lands in a hex the user has never explored. Consume the flag immediately
+        // so a second location event doesn't fire a second prompt.
+        .onChange(of: locationManager.shouldPromptUnexploredArea) { _, detected in
+            if detected {
+                locationManager.shouldPromptUnexploredArea = false
+                // Don't stack prompts — show only if neither prompt is already visible
+                if !showExplorationPrompt && !locationManager.isSessionActive {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        showUnexploredAreaPrompt = true
+                    }
+                }
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
@@ -364,13 +381,20 @@ struct ContentView: View {
                     .zIndex(4)
             }
 
-            // MARK: Exploration Prompt
+            // MARK: Exploration Prompt (launch)
             if showExplorationPrompt {
                 explorationPromptOverlay
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                     .zIndex(10)
             }
-            
+
+            // MARK: Unexplored Area Prompt (location-triggered)
+            if showUnexploredAreaPrompt {
+                unexploredAreaPromptOverlay
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .zIndex(10)
+            }
+
             // MARK: Achievement Banner & Confetti
             // Banner slides down from top when a new achievement is unlocked.
             // Multiple unlocks are queued and shown one after another.
@@ -469,6 +493,56 @@ struct ContentView: View {
 
                     Button {
                         withAnimation { showExplorationPrompt = false }
+                    } label: {
+                        Text("Not right now")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(28)
+                .background(.ultraThickMaterial)
+                .cornerRadius(28)
+                .shadow(radius: 24)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 40)
+            }
+    }
+
+    private var unexploredAreaPromptOverlay: some View {
+        Color.black.opacity(0.45)
+            .ignoresSafeArea()
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 20) {
+                    Image(systemName: "map.fill")
+                        .font(.system(size: 52))
+                        .foregroundStyle(.orange)
+
+                    VStack(spacing: 8) {
+                        Text("New territory ahead!")
+                            .font(.title2).bold()
+                            .multilineTextAlignment(.center)
+
+                        Text("You've stepped into an area you've never explored. Start a session to scratch it onto your map.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Button {
+                        locationManager.startSession()
+                        withAnimation { showUnexploredAreaPrompt = false }
+                    } label: {
+                        Label("Start Exploring", systemImage: "play.fill")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(.green)
+                            .cornerRadius(16)
+                    }
+
+                    Button {
+                        withAnimation { showUnexploredAreaPrompt = false }
                     } label: {
                         Text("Not right now")
                             .font(.subheadline)

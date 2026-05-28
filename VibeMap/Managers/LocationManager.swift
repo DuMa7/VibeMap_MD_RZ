@@ -17,6 +17,15 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     /// GPS only records hexes during an active session.
     var isSessionActive: Bool = false
 
+    /// Set to `true` when the user enters a Swiss hex that has never been explored
+    /// while no session is active. ContentView observes this to show the exploration prompt.
+    /// ContentView resets it to `false` immediately after consuming it.
+    var shouldPromptUnexploredArea: Bool = false
+
+    /// Last hex for which an unexplored-area check was run — prevents re-prompting
+    /// while the user stays in the same cell, or for an already-checked explored cell.
+    private var lastCheckedHex: String? = nil
+
     // Two-layer deduplication to minimise SwiftData and SQLite traffic:
     //   1. lastSavedHex  — cheapest check: skip if still in the same hex as the previous update
     //   2. exploredHexSet — O(1) full-history check: skip hexes recorded in any past session
@@ -52,6 +61,8 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func startSession() {
         guard !isSessionActive else { return }
         isSessionActive = true
+        shouldPromptUnexploredArea = false
+        lastCheckedHex = nil
         buildExploredSet()
         if authorizationStatus == .notDetermined {
             requestPermission()
@@ -65,6 +76,8 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         guard isSessionActive else { return }
         flushPendingData()
         isSessionActive = false
+        shouldPromptUnexploredArea = false
+        lastCheckedHex = nil
         exploredHexSet.removeAll()
         manager.stopUpdatingLocation()
         // Significant-change monitoring keeps userLocation roughly updated at minimal battery cost
@@ -234,34 +247,38 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
 
         userLocation = location.coordinate
 
-        // Only record hexes during an active exploration session
-        guard isSessionActive else { return }
-
+        // Compute H3 indices for both recording (session active) and
+        // unexplored-area detection (session inactive). Both paths need the same pair.
         let latRads = location.coordinate.latitude * .pi / 180.0
         let lonRads = location.coordinate.longitude * .pi / 180.0
         var coord = LatLng(lat: latRads, lng: lonRads)
-        
+
         // Generate both res-10 (~15 m cells, primary) and res-9 (parent, fallback).
         // We pass both to OfflineDatabase so the lookup can find a regionID even when
         // a boundary area is only indexed at res-9. The res-10 index is always what gets
         // saved — consistent cell granularity regardless of which DB row was matched.
         var h3Index10: H3Index = 0
-        var h3Index9: H3Index = 0
+        var h3Index9:  H3Index = 0
         latLngToCell(&coord, Int32(10), &h3Index10)
-        latLngToCell(&coord, Int32(9), &h3Index9)
-
+        latLngToCell(&coord, Int32(9),  &h3Index9)
         let hex10 = String(h3Index10, radix: 16)
-        let hex9 = String(h3Index9, radix: 16)
+        let hex9  = String(h3Index9,  radix: 16)
+
+        guard isSessionActive else {
+            // Outside a session: check whether we've stepped into unexplored territory.
+            checkUnexploredArea(hex10: hex10, hex9: hex9)
+            return
+        }
 
         // SQLite lookup is synchronous but takes <1 ms on the bundled database (no network)
         if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
             // Always use the res-10 index as the canonical hex — never the matched DB row's index
             let activeHex = hex10
 
-            // 3. Cheap geofence: same hex as last update — skip immediately
+            // Cheap geofence: same hex as last update — skip immediately
             guard activeHex != lastSavedHex else { return }
 
-            // 4. Already-explored suppression: O(1) check, no SwiftData needed
+            // Already-explored suppression: O(1) check, no SwiftData needed
             guard !exploredHexSet.contains(activeHex) else {
                 lastSavedHex = activeHex
                 return
@@ -279,6 +296,28 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             } else {
                 flushPendingData()
             }
+        }
+    }
+
+    /// Checks whether `hex10` is within Switzerland and has not yet been explored.
+    /// Called only when no session is active (significant-change monitoring, ~500 m intervals).
+    /// Sets `shouldPromptUnexploredArea = true` the first time a new unexplored cell is detected.
+    private func checkUnexploredArea(hex10: String, hex9: String) {
+        // Skip if we already ran this check for the same cell
+        guard hex10 != lastCheckedHex else { return }
+        lastCheckedHex = hex10
+
+        // Only prompt for cells inside Switzerland
+        guard OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) != nil else { return }
+        guard let context = modelContext else { return }
+
+        let desc = FetchDescriptor<ExploredHex>(
+            predicate: #Predicate { $0.h3Index == hex10 }
+        )
+        let alreadyExplored = (try? context.fetch(desc))?.isEmpty == false
+        if !alreadyExplored {
+            print("🔔 Unexplored area detected: \(hex10) — prompting user")
+            shouldPromptUnexploredArea = true
         }
     }
     
