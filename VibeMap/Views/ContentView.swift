@@ -89,6 +89,12 @@ struct ContentView: View {
     /// Controls the "New territory ahead!" prompt triggered by a location move into an unexplored hex
     @State private var showUnexploredAreaPrompt = false
 
+    /// Controls the session summary sheet shown after stopping a session
+    @State private var showSessionSummary = false
+
+    /// Snapshot of the last completed session — drives the summary sheet
+    @State private var lastSessionSummary: SessionSummary? = nil
+
     /// Drives the pulsing animation on the recording dot in the HUD pill
     @State private var recordingPulse: Bool = false
 
@@ -186,6 +192,14 @@ struct ContentView: View {
                 updateCenteredRegion(coordinate: newValue)
             }
         }
+        // Session summary: presented as a sheet when LocationManager posts a completed summary.
+        // Snapshot into local state so the sheet has a stable value even if LocationManager clears it.
+        .onChange(of: locationManager.completedSessionSummary) { _, summary in
+            if let summary {
+                lastSessionSummary = summary
+                showSessionSummary = true
+            }
+        }
         // Unexplored-area detection: LocationManager signals when a non-session location
         // update lands in a hex the user has never explored. Consume the flag immediately
         // so a second location event doesn't fire a second prompt.
@@ -203,6 +217,13 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showPassport) {
             PassportView(regions: regions, cantons: layerManager.cantons)
+        }
+        .sheet(isPresented: $showSessionSummary) {
+            if let summary = lastSessionSummary {
+                SessionSummaryView(summary: summary) {
+                    showSessionSummary = false
+                }
+            }
         }
     }
     

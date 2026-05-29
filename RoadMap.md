@@ -112,7 +112,7 @@
 | 6.1 | Exploration Session Mode | ✅ | 🔴 High | User explicitly starts an "Explore" session. GPS only runs during active sessions. Launch prompt: "Exploring somewhere new today?" |
 | 6.2 | Smart session suggestions | ⏳ | 🟠 Medium-High | Learn routine locations (home, work) and skip tracking in known territory |
 | 6.3 | Already-explored suppression | ✅ | 🟠 Medium-High | `exploredHexSet` built at session start — O(1) check per GPS fix, no SwiftData lookup for known hexes |
-| 6.4 | Session summary | ⏳ | 🟡 Medium | After ending a session: new hexes, new municipalities, distance, time |
+| 6.4 | Session summary | ✅ | 🟡 Medium | Sheet on session stop: new hexes, new municipalities entered, duration. `SessionSummaryView` + `SessionSummary` struct in `LocationManager`. Data sourced from `firstVisited >= sessionStartDate` predicate |
 | 6.5 | Battery & accuracy profiles | ✅ | 🟡 Medium | Foreground: best accuracy, 15 m filter. Background: 10 m accuracy, 50 m filter. Outside session: significant-change monitoring only |
 | 6.6 | Unexplored area prompt | ✅ | 🟠 Medium-High | When outside a session, entering a Swiss hex never before explored shows "New territory ahead!" overlay prompting the user to start a session. Gated by `lastCheckedHex` to avoid repeated prompts for the same cell |
 

@@ -5,6 +5,19 @@ import CoreLocation
 import Observation
 import SwiftData
 
+// MARK: - Session Summary
+
+/// Snapshot of what was discovered during a single exploration session.
+/// Built in `stopSession()` after the final flush, before session state is cleared.
+struct SessionSummary {
+    let duration: TimeInterval
+    let newHexCount: Int
+    /// Municipality names first entered during this session, sorted alphabetically.
+    let newRegionNames: [String]
+
+    var newRegionCount: Int { newRegionNames.count }
+}
+
 @Observable
 class LocationManager: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
@@ -21,6 +34,11 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     /// while no session is active. ContentView observes this to show the exploration prompt.
     /// ContentView resets it to `false` immediately after consuming it.
     var shouldPromptUnexploredArea: Bool = false
+
+    /// Populated at the end of each session; ContentView observes this to present the summary sheet.
+    var completedSessionSummary: SessionSummary? = nil
+
+    private var sessionStartDate: Date? = nil
 
     /// Last hex for which an unexplored-area check was run — prevents re-prompting
     /// while the user stays in the same cell, or for an already-checked explored cell.
@@ -63,6 +81,8 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         isSessionActive = true
         shouldPromptUnexploredArea = false
         lastCheckedHex = nil
+        sessionStartDate = Date()
+        completedSessionSummary = nil
         buildExploredSet()
         if authorizationStatus == .notDetermined {
             requestPermission()
@@ -75,14 +95,39 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func stopSession() {
         guard isSessionActive else { return }
         flushPendingData()
+        if let startDate = sessionStartDate {
+            completedSessionSummary = buildSessionSummary(startDate: startDate)
+        }
         isSessionActive = false
         shouldPromptUnexploredArea = false
         lastCheckedHex = nil
+        sessionStartDate = nil
         exploredHexSet.removeAll()
         manager.stopUpdatingLocation()
         // Significant-change monitoring keeps userLocation roughly updated at minimal battery cost
         manager.startMonitoringSignificantLocationChanges()
         print("⏹️ Exploration session stopped")
+    }
+
+    private func buildSessionSummary(startDate: Date) -> SessionSummary {
+        let duration = Date().timeIntervalSince(startDate)
+        guard let context = modelContext else {
+            return SessionSummary(duration: duration, newHexCount: 0, newRegionNames: [])
+        }
+
+        let hexDesc = FetchDescriptor<ExploredHex>(
+            predicate: #Predicate { $0.firstVisited >= startDate }
+        )
+        let newHexCount = (try? context.fetch(hexDesc))?.count ?? 0
+
+        let regionDesc = FetchDescriptor<RegionExploration>(
+            predicate: #Predicate { $0.firstVisited >= startDate }
+        )
+        let newRegionNames = ((try? context.fetch(regionDesc)) ?? [])
+            .map { $0.name }
+            .sorted()
+
+        return SessionSummary(duration: duration, newHexCount: newHexCount, newRegionNames: newRegionNames)
     }
 
     private func buildExploredSet() {
