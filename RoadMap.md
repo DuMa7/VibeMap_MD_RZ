@@ -87,7 +87,7 @@
 ## Phase 4 — Social & Motivation Layer
 | # | Feature | Status | Priority | Notes |
 |---|---------|--------|----------|-------|
-| 4.1 | Exploration streaks | ⏳ | 🟠 Medium-High | Consecutive days with new hexes — derivable from existing `lastVisited` data |
+| 4.1 | Exploration streaks | ✅ | 🟠 Medium-High | `StreakCalculator` derives current + best streak from `ExploredHex.firstVisited` dates. Current streak stays alive if user explored today or yesterday. Shown in Explorer Profile (Streak / Best cards) and in session summary banner |
 | 4.2 | Personal records | ⏳ | 🟡 Medium | "Best day" stats — derivable from `firstVisited` timestamps |
 | 4.3 | Passport / Profile view | ✅ | 🟠 Medium-High | `PassportView` — per-canton card with visited/total municipalities |
 | 4.4 | Challenges | ⏳ | 🟡 Medium | Time-boxed auto-generated goals — builds on existing achievement engine |

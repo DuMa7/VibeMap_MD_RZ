@@ -121,6 +121,11 @@ struct ContentView: View {
 
     /// Total distinct cantons visited — cached to avoid O(N) compactMap on every render
     @State private var cachedVisitedCantonCount: Int = 0
+
+    // MARK: - Streak Cache
+
+    /// Current and best exploration streaks — recomputed when hex count changes
+    @State private var streakResult = StreakCalculator.Result(current: 0, best: 0)
     
     // MARK: - Body
 
@@ -154,6 +159,7 @@ struct ContentView: View {
                 withAnimation { isLoading = false }
                 repairRegionTotals()
                 rebuildCantonCounts()
+                rebuildStreak()
                 checkAchievements()
                 if !locationManager.isSessionActive {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -178,9 +184,10 @@ struct ContentView: View {
                 updateCenteredRegion(coordinate: newValue)
             }
         }
-        // Re-check achievements whenever the user enters a new hex
+        // Re-check achievements and streak whenever the user enters a new hex
         .onChange(of: exploredHexes.count) { _, _ in
             checkAchievements()
+            rebuildStreak()
         }
         // Rebuild canton caches when a new municipality is discovered
         .onChange(of: regions.count) { _, _ in
@@ -832,7 +839,24 @@ struct ContentView: View {
                                 statCard(icon: "globe.europe.africa.fill", title: "Area", value: "\(calculateArea()) km²")
                             }
                             .padding(.horizontal)
-                            
+
+                            // Streak cards
+                            HStack(spacing: 15) {
+                                streakCard(
+                                    icon: "flame.fill",
+                                    title: "Streak",
+                                    value: streakResult.current == 0 ? "–" : "\(streakResult.current)d",
+                                    color: streakResult.current > 0 ? .orange : .gray
+                                )
+                                streakCard(
+                                    icon: "trophy.fill",
+                                    title: "Best",
+                                    value: streakResult.best == 0 ? "–" : "\(streakResult.best)d",
+                                    color: .yellow
+                                )
+                            }
+                            .padding(.horizontal)
+
                             // National progress — cantons and municipalities vs Swiss totals
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("National Discovery").font(.headline)
@@ -908,7 +932,19 @@ struct ContentView: View {
     }
     
     // MARK: - Stats Helpers
-    
+
+    private func streakCard(icon: String, title: String, value: String, color: Color) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon).font(.title2).foregroundStyle(color)
+            Text(value).font(.title3).bold()
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(Color.white.opacity(0.1))
+        .cornerRadius(16)
+    }
+
     /// Estimates explored area in km² using the H3 resolution-10 average cell area
     /// of ~0.015 km² (~15,047 m²). This is a global average; actual Swiss cell sizes
     /// vary slightly by latitude but the approximation is accurate within ~2%.
@@ -972,6 +1008,12 @@ struct ContentView: View {
         }
         visitedCountPerCanton    = countPerCanton
         cachedVisitedCantonCount = countPerCanton.count
+    }
+
+    // MARK: - Streak
+
+    private func rebuildStreak() {
+        streakResult = StreakCalculator.calculate(dates: exploredHexes.map { $0.firstVisited })
     }
 
     // MARK: - Achievement Logic

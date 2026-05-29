@@ -44,26 +44,47 @@ struct SessionSummaryView: View {
     }
 
     private var statsRow: some View {
-        HStack(spacing: 16) {
-            statCard(
-                value: "\(summary.newHexCount)",
-                label: summary.newHexCount == 1 ? "New hex" : "New hexes",
-                icon: "hexagon.fill",
-                color: .blue
-            )
-            statCard(
-                value: "\(summary.newRegionCount)",
-                label: summary.newRegionCount == 1 ? "New area" : "New areas",
-                icon: "map.fill",
-                color: .orange
-            )
-            statCard(
-                value: formattedDuration,
-                label: "Duration",
-                icon: "clock.fill",
-                color: .purple
-            )
+        VStack(spacing: 12) {
+            HStack(spacing: 16) {
+                statCard(
+                    value: "\(summary.newHexCount)",
+                    label: summary.newHexCount == 1 ? "New hex" : "New hexes",
+                    icon: "hexagon.fill",
+                    color: .blue
+                )
+                statCard(
+                    value: "\(summary.newRegionCount)",
+                    label: summary.newRegionCount == 1 ? "New area" : "New areas",
+                    icon: "map.fill",
+                    color: .orange
+                )
+                statCard(
+                    value: formattedDuration,
+                    label: "Duration",
+                    icon: "clock.fill",
+                    color: .purple
+                )
+            }
+            if summary.currentStreak > 0 {
+                streakBanner
+            }
         }
+    }
+
+    private var streakBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "flame.fill")
+                .foregroundStyle(.orange)
+            Text(summary.currentStreak == 1
+                 ? "Day 1 streak — keep it going tomorrow!"
+                 : "\(summary.currentStreak)-day streak! 🔥")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func statCard(value: String, label: String, icon: String, color: Color) -> some View {
@@ -166,7 +187,8 @@ struct SessionSummaryView: View {
         summary: SessionSummary(
             duration: 3720,
             newHexCount: 42,
-            newRegionNames: ["Bern", "Köniz", "Ostermundigen"]
+            newRegionNames: ["Bern", "Köniz", "Ostermundigen"],
+            currentStreak: 5
         ),
         onDismiss: {}
     )

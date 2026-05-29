@@ -14,6 +14,8 @@ struct SessionSummary {
     let newHexCount: Int
     /// Municipality names first entered during this session, sorted alphabetically.
     let newRegionNames: [String]
+    /// Current exploration streak in days (including today) after this session ends.
+    let currentStreak: Int
 
     var newRegionCount: Int { newRegionNames.count }
 }
@@ -112,7 +114,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     private func buildSessionSummary(startDate: Date) -> SessionSummary {
         let duration = Date().timeIntervalSince(startDate)
         guard let context = modelContext else {
-            return SessionSummary(duration: duration, newHexCount: 0, newRegionNames: [])
+            return SessionSummary(duration: duration, newHexCount: 0, newRegionNames: [], currentStreak: 0)
         }
 
         let hexDesc = FetchDescriptor<ExploredHex>(
@@ -127,7 +129,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             .map { $0.name }
             .sorted()
 
-        return SessionSummary(duration: duration, newHexCount: newHexCount, newRegionNames: newRegionNames)
+        let allDates = ((try? context.fetch(FetchDescriptor<ExploredHex>())) ?? []).map { $0.firstVisited }
+        let streak = StreakCalculator.calculate(dates: allDates)
+
+        return SessionSummary(duration: duration, newHexCount: newHexCount, newRegionNames: newRegionNames, currentStreak: streak.current)
     }
 
     private func buildExploredSet() {
