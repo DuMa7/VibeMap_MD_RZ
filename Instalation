@@ -1,0 +1,22 @@
+## How to Install
+
+**Requirements:** A Mac with Xcode 15+, and a physical iPhone running iOS 17+.
+
+1. **Clone the repo**
+   git clone https://github.com/YOUR_USERNAME/VibeMap.git (Il faudra revoir ça pour le bon https)
+
+2. **Open in Xcode**
+   Open `VibeMap.xcodeproj`
+
+3. **Set your signing team**
+   Select the `VibeMap` target → Signing & Capabilities → choose your Apple ID under Team.
+
+4. **Resolve packages**
+   Xcode should fetch `swift-h3` automatically. If not: File → Packages → Resolve Package Versions.
+
+5. **Run on a real device**
+   Background location and visit monitoring don't work in the simulator.
+   Select your iPhone as the target and press Run (⌘R).
+
+6. **Grant location access**
+   When prompted, select **Always Allow** — this is required for background tracking.
