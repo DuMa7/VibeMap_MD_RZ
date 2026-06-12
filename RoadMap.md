@@ -39,7 +39,7 @@
 ## Known Open Issues
 | Issue | File | Status | Notes |
 |-------|------|--------|-------|
-| Confetti animation not confirmed working | `ConfettiView.swift` | ⏳ | Deferred, address after Phase 3 |
+| Confetti animation not confirmed working | `ConfettiView.swift` | ✅ | Root cause found: `.opacity` sat after the `.animation` modifier, so particles snapped invisible the moment the burst started. View rewritten — stable per-identity particles, gravity fall, end-of-fall fade. Banner queue stall fixed alongside (`.id(achievement.title)`) |
 | Hex rendering laggy at span < 0.15 | `MapView.swift` | ⏳ | Root cause not isolated. Suspects: too many `MapPolygon` rings, SwiftUI diff cost, MapKit overlay threshold. Next step: profile with Instruments (Time Profiler + Metal System Trace). Long-term fix: custom `MKOverlay` / Metal renderer batching all rings into one draw call |
 
 ---

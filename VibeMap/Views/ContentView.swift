@@ -426,11 +426,19 @@ struct ContentView: View {
                 AchievementBannerView(achievement: achievement) {
                     showNextBanner()
                 }
+                // Identity must change per achievement: queued banners replace each
+                // other while the view stays in the hierarchy, and with a stable
+                // identity SwiftUI keeps the old @State (isVisible already false,
+                // onAppear never re-fires) — the second banner would stay invisible
+                // and the queue would stall.
+                .id(achievement.title)
                 .zIndex(1)
-                
+
                 ConfettiView()
                     .ignoresSafeArea()
                     .allowsHitTesting(false) // Prevents confetti particles from blocking map taps
+                    // Same identity trick: replay the confetti burst for each queued banner.
+                    .id("confetti-\(achievement.title)")
                     .zIndex(2)
             }
             
