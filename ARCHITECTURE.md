@@ -10,9 +10,9 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 
 | Feature | Description |
 |---|---|
-| Hex recording | Every GPS fix is converted to an H3 resolution-10 cell (~15 m² area). New cells are written to SwiftData. |
+| Hex recording | Every GPS fix is converted to an H3 resolution-10 cell (~15,000 m² area, ≈66 m edge). New cells are written to SwiftData. |
 | Session model | GPS only runs during an explicit "Explore" session. Outside sessions, significant-change monitoring keeps location roughly current at minimal battery cost. |
-| Zoom-level map overlays | Street zoom → individual hex outlines. Mid-zoom → coarser res-9 cells. Municipality zoom → filled municipality polygons. Canton zoom → canton polygons. |
+| Zoom-level map overlays | Street zoom (span < 0.15) → individual hex outlines. Municipality zoom (0.15–2.0) → filled municipality polygons. Canton zoom (2.0–10.0) → canton polygons. |
 | Offline region lookup | An SQLite database (`swiss_index.sqlite`) maps every H3 cell to its Swiss municipality — no network required. |
 | Live HUD pill | Shows the municipality/canton/country name and exploration % at the current map crosshair. Updates on pan and on walking. |
 | Location Details | Tap the HUD pill for a three-level drill-down: municipality hex progress, canton town count, Switzerland canton count. |
@@ -20,7 +20,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | Explorer Profile | Total hexes, area (km²), national discovery progress, and unlocked achievements. |
 | Achievements | 7 unlockable badges based on hex count and municipality count. Banners appear with confetti on unlock; multiple unlocks queue. |
 | GPX import | Parses GPX files from Garmin, Strava, AllTrails, etc. Preview before committing. Batch-inserts only new hexes. |
-| Backup / restore | Exports all data as a JSON file. Restore reads the file and merges records. Auto-backup on app background. |
+| Backup / restore | Exports all data as a JSON file. Restore replaces all local data after a preview/confirm step. Auto-backup on app background. |
 | Map styles | Standard, Hybrid, Imagery — switched via the layer panel. |
 | Data repair | Regions with `totalHexes = 0` (startup race condition) are silently fixed on launch. |
 
@@ -42,8 +42,8 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
        │ SwiftData             │ SQLite (read-only)
 ┌──────▼──────┐        ┌──────▼───────────────┐
 │ ExploredHex │        │  swiss_index.sqlite   │
-│ LocationPoint        │  Hex_Map table        │
-│ RegionExploration    │  h3_index → region_id │
+│ RegionExploration    │  Hex_Map table        │
+│             │        │  h3_index → region_id │
 └─────────────┘        └──────────────────────┘
        │
 ┌──────▼──────────────────────────────────────────────┐
@@ -67,7 +67,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 
 | File | Role |
 |---|---|
-| `VibeMapApp.swift` | `@main` entry point. Creates the SwiftData `ModelContainer` (ExploredHex, LocationPoint, RegionExploration). Injects `LocationManager` as an environment object. Forwards scene lifecycle events to LocationManager. |
+| `VibeMapApp.swift` | `@main` entry point. Creates the SwiftData `ModelContainer` (ExploredHex, RegionExploration). Injects `LocationManager` as an environment object. Forwards scene lifecycle events to LocationManager. |
 
 ### Views
 
@@ -87,9 +87,9 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | File | Lines | Role |
 |---|---|---|
 | `LocationManager.swift` | 315 | Core location engine. Manages the session lifecycle (start/stop), two GPS accuracy profiles (foreground / background), and the two-layer deduplication system (`lastSavedHex` for same-hex skips, `exploredHexSet` for full-history suppression). Batches new hexes in `pendingHexes` and flushes to SwiftData. Handles background task lifecycle so flushes complete even after the user backgrounds the app. |
-| `MapLayerManager.swift` | 103 | Async-loads `cantons.geojson` and `municipalities.geojson` from the bundle. Parses them into `[GeoRegion]` polygon arrays. Populates `RegionMetadataManager` as a side effect during municipality parse. |
-| `OfflineDatabase.swift` | 90 | Singleton wrapping `swiss_index.sqlite`. Opens the file once, pre-compiles two SQLite statements (region lookup by hex index, hex count per region), and reuses them on every call. Used on every GPS fix — must be fast. |
-| `BackupManager.swift` | 129 | Serialises all `ExploredHex` and `RegionExploration` records to JSON (`BackupData` v2). Restores by decoding and merging (skips duplicates). Auto-backup runs on scene background. |
+| `MapLayerManager.swift` | 120 | Parses `cantons.geojson` and `municipalities.geojson` in a detached task (the multi-MB decode never blocks the main thread), then publishes the `[GeoRegion]` arrays and the `RegionMetadataManager` metadata table on the main actor. |
+| `OfflineDatabase.swift` | 105 | Singleton wrapping `swiss_index.sqlite`. Opens the file once, pre-compiles two SQLite statements (region lookup by hex index, hex count per region), and serializes every use on a private dispatch queue — safe from the main actor and detached tasks alike. Used on every GPS fix — must be fast. |
+| `BackupManager.swift` | 150 | Serialises all `ExploredHex` and `RegionExploration` records to JSON (`BackupData` v2), encoding and writing off-main. Restore wipes the store and re-inserts the backup's records after a preview/confirm step. Auto-backup runs on scene background inside a UIKit background task. |
 | `GPXImporter.swift` | 300 | Two-phase import: `parse()` (no DB writes, builds preview summary) and `importFiles()` (batch write). The coordinate→H3 conversion runs on a detached task. Only genuinely new hexes reach SwiftData. |
 | `HealthKitImporter.swift` | 230 | Two-phase sync from any app that writes `HKWorkoutRoute` GPS data (Komoot, Apple Fitness, Strava, etc.). `buildPreview()` fetches workout metadata and groups by source app. `importWorkouts()` fetches GPS routes via `HKWorkoutRouteQuery`, converts to H3 off-thread (same pipeline as GPXImporter), and batch-inserts new hexes. Tracks hexes per source app for the result summary. Stores a sync watermark in UserDefaults (`healthKitLastSyncDate`) for incremental syncs. Apps that only sync summaries (e.g. Garmin Connect) produce `workoutsWithRoutes = 0` in the result and are called out in the UI. |
 | `DataMigrationManager.swift` | 130 | One-time data migrations run from `ContentView.task` on each launch. Each migration is gated by a UserDefaults flag. **Migration 1 (`hasCompletedRes9ToRes10Migration_v1`)**: converts every res-9 `ExploredHex` to its res-10 centre child via `H3Wrapper.cellToCenterChild`. If a res-10 counterpart already exists the res-9 record is removed without creating a duplicate. `RegionExploration.exploredHexes` is updated in the same atomic `context.save()`. |
@@ -99,8 +99,8 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 
 | File | Lines | Role |
 |---|---|---|
-| `ExplorationModels.swift` | 52 | Two SwiftData models. `ExploredHex`: one record per H3 cell visited (`@Attribute(.unique)` on h3Index); each hex is written exactly once, never updated. `visitCount` is always 1 and kept only to avoid a SwiftData schema migration. `LocationPoint`: raw GPS coordinates — currently unused, reserved for a future breadcrumb feature. |
-| `RegionExploration.swift` | 55 | SwiftData model for per-municipality stats. Stores `exploredHexes: [String]` (persistable) plus a `@Transient Set<String>` for O(1) membership checks. The set is lazily rebuilt from the array on first access after a fetch. **All mutations must go through `addExploredHex` to keep array and set in sync.** Inline SQLite repair in `explorationPercentage` self-heals records where `totalHexes` was saved as 0. |
+| `ExplorationModels.swift` | 38 | `ExploredHex`: one record per H3 cell visited (`@Attribute(.unique)` on h3Index); each hex is written exactly once, never updated. `visitCount` is always 1 and kept only to avoid a SwiftData schema migration. |
+| `RegionExploration.swift` | 55 | SwiftData model for per-municipality stats. Stores `exploredHexes: [String]` (persistable) plus a `@Transient Set<String>` for O(1) membership checks. The set is lazily rebuilt from the array on first access after a fetch. **All mutations must go through `addExploredHex` to keep array and set in sync.** Records where `totalHexes` was saved as 0 are repaired once per launch by `ContentView.repairRegionTotals()` — the getter is pure. |
 | `Achievement.swift` | 111 | 7 achievements defined as structs with `(hexCount, cityCount) -> Bool` closure criteria. Persistence uses title strings (not UUIDs, which regenerate each launch). `AchievementRow` is the list cell used in SettingsView and the stats overlay. |
 | `BackupModels.swift` | 47 | Codable DTOs for JSON serialisation: `BackupData`, `HexBackupDTO`, `RegionBackupDTO`, `BackupPreview`. |
 | `MapLayerSettings.swift` | 37 | `@Observable` class holding `baseStyle` (Standard / Hybrid / Imagery) and `showExploredHexes`. Shared between ContentView and MapView. |
@@ -109,7 +109,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 
 | File | Lines | Role |
 |---|---|---|
-| `H3Wrapper.swift` | 87 | Static wrappers around the H3 Swift package. Key methods: `getRawIndex` (coordinate → UInt64 index), `getVertices` (index → boundary coordinates), `cellToParent` (promote to coarser resolution), `cellToCenterChild` (unique child closest to parent centroid — used by the res-9 migration), `cellCenter` (centroid by vertex average — used for viewport culling). |
+| `H3Wrapper.swift` | 55 | Static wrappers around the H3 Swift package. Key methods: `getVertices` (index → boundary coordinates), `cellToCenterChild` (unique child closest to parent centroid — used by the res-9 migration), `cellCenter` (centroid by vertex average — used for the spatial grid). |
 | `HexMerger.swift` | 74 | Half-edge boundary algorithm. Collects all directed edges from a set of H3 hexes, filters to boundary edges (those with no reverse), then walks closed rings. Reduces N individual polygons to a handful of merged cluster outlines. `CoordKey` rounds coordinates to 7 decimal places (~1 cm) to safely compare vertices across independently-computed adjacent cells. |
 
 ---
@@ -218,7 +218,7 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 | **H3 (Uber)** via Swift package | Hierarchical hex grid. Resolution 9/10 parent-child relationship drives the zoom-level ladder. Offline C computation, <1 ms per fix. |
 | **swiss_index.sqlite** (bundled) | Pre-built map of every H3 cell in Switzerland → municipality ID. Eliminates network dependency for region detection. Schema: `Hex_Map(h3_index TEXT, region_id TEXT, resolution INTEGER)`. |
 | **cantons.geojson / municipalities.geojson** (bundled) | GeoJSON polygon data for map overlays and metadata (names, canton IDs). Loaded once at startup. |
-| **HealthKit** (system framework) | Read-only access to workout routes. Used exclusively by `HealthKitImporter` to pull Garmin Connect activities. Requires `com.apple.developer.healthkit` entitlement and `NSHealthShareUsageDescription` in Info.plist. |
+| **HealthKit** (system framework) | Read-only access to workout routes. Used by `HealthKitImporter` to pull GPS routes from any app that writes them (Apple Fitness, Komoot, Strava, …). Requires `com.apple.developer.healthkit` entitlement and `NSHealthShareUsageDescription` in Info.plist. |
 
 ---
 
@@ -226,7 +226,7 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 
 | Store | Contents | Access pattern |
 |---|---|---|
-| SwiftData (on-device) | `ExploredHex`, `LocationPoint`, `RegionExploration` | `@Query` in views; `ModelContext` in managers |
+| SwiftData (on-device) | `ExploredHex`, `RegionExploration` | `@Query` in views; `ModelContext` in managers |
 | `swiss_index.sqlite` | H3 index → region mapping (read-only) | Pre-compiled SQLite statements, called per GPS fix |
 | `UserDefaults` (`AppStorage`) | `unlockedAchievementTitles` (comma-separated) | Read/write on achievement check |
 | JSON file (user's Files app) | Full data export for backup/restore | Written on demand and on scene background |
@@ -238,7 +238,6 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 | Item | Detail |
 |---|---|
 | `visitCount` vestigial property | Always 1 on every `ExploredHex`. `recordVisit()` has been removed. The field is kept in the model to avoid a SwiftData schema migration; remove it with a `VersionedSchema` bump when the model is next versioned. |
-| `LocationPoint` model unused | Defined and included in ModelContainer but never written to. Reserved for future breadcrumb feature. |
 | Legacy res-9 hexes | All recording paths (live GPS, GPX import, HealthKit sync) now always save `resolution: 10`. On first launch after updating, `DataMigrationManager.migrateRes9ToRes10` converts every legacy res-9 record to its res-10 centre child in a single atomic `context.save()`. After migration the database contains only res-10 records and the rendering ladders work correctly at all zoom levels. |
 | **Hex rendering still laggy at hex zoom** | Even with the spatial grid index and fully off-thread pipeline, rendering noticeably lags at span < 0.15 with a large hex dataset. Root cause not yet isolated — likely a combination of: (1) HexMerger producing too many `MapPolygon` rings for MapKit to render smoothly, (2) SwiftUI diffing cost when `hexOutlines` is replaced wholesale, or (3) `MapPolygon` overlay count exceeding MapKit's comfortable threshold. **Next steps to investigate**: profile with Instruments (Time Profiler + Metal System Trace), consider capping ring count, or switch from `MapPolygon` to a custom `MKOverlay`/Metal renderer that batches all rings into a single draw call. |
 | `currentZoomPercentage` does a linear scan | At canton zoom, finds the canton by a `.first(where:)` scan over `layerManager.cantons` on every render. Fine for 26 cantons, worth caching if canton list grows. |
