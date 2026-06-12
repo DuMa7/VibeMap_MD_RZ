@@ -10,14 +10,12 @@ import CoreLocation
 ///
 /// Result: one ring per contiguous cluster of hexes (plus any interior holes).
 /// Reduces N individual MapPolygon views to a handful of merged boundaries.
-enum HexMerger {
+///
+/// Pure stateless geometry — explicitly nonisolated so the map pipeline can
+/// run it inside detached tasks (the project's default isolation is MainActor).
+nonisolated enum HexMerger {
     static func mergeHexOutlines(_ h3Indices: [String]) -> [[CLLocationCoordinate2D]] {
         guard !h3Indices.isEmpty else { return [] }
-
-        struct DirectedEdge: Hashable {
-            let from: CoordKey
-            let to: CoordKey
-        }
 
         // Each hex contributes 6 directed edges; ×7 leaves headroom for H3's shared-boundary topology.
         var edgeSet = Set<DirectedEdge>(minimumCapacity: h3Indices.count * 7)
@@ -58,11 +56,19 @@ enum HexMerger {
     }
 }
 
-// MARK: - CoordKey
+// MARK: - DirectedEdge / CoordKey
+
+/// Directed edge (A→B in vertex winding order) between two rounded coordinates.
+/// File-scope and nonisolated (rather than function-local) so its synthesized
+/// Hashable conformance is usable from the nonisolated merge pipeline.
+private nonisolated struct DirectedEdge: Hashable {
+    let from: CoordKey
+    let to: CoordKey
+}
 
 /// Hashable coordinate wrapper. Rounds to 7 decimal places (~1 cm) to safely
 /// compare H3 boundary vertices across independently-computed adjacent cells.
-struct CoordKey: Hashable {
+nonisolated struct CoordKey: Hashable {
     let lat: Int64
     let lon: Int64
 

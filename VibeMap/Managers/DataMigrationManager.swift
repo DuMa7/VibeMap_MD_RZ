@@ -105,7 +105,7 @@ enum DataMigrationManager {
         let regionDesc = FetchDescriptor<RegionExploration>(
             predicate: #Predicate { regionIDs.contains($0.regionID) }
         )
-        var regionCache: [String: RegionExploration] = Dictionary(
+        let regionCache: [String: RegionExploration] = Dictionary(
             uniqueKeysWithValues: ((try? context.fetch(regionDesc)) ?? []).map { ($0.regionID, $0) }
         )
 

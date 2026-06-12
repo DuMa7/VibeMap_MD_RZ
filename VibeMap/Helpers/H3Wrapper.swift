@@ -2,7 +2,10 @@ import Foundation
 import CoreLocation
 import H3
 
-struct H3Wrapper {
+/// Pure stateless wrappers around the H3 package. Explicitly nonisolated so the
+/// recording, import, and map pipelines can call them inside detached tasks
+/// (the project's default actor isolation is MainActor).
+nonisolated struct H3Wrapper {
 
     static func getRawIndex(
         from coordinate: CLLocationCoordinate2D,

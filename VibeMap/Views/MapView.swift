@@ -14,7 +14,9 @@ struct MapView: View {
     private static let gridBucketSize = 0.1
 
     /// 2D bucket key. Both fields are `Int` so the struct is automatically Sendable.
-    private struct GridKey: Hashable, Sendable {
+    /// nonisolated so its synthesized Hashable conformance is usable inside the
+    /// detached grid/outline tasks (the project's default isolation is MainActor).
+    private nonisolated struct GridKey: Hashable, Sendable {
         let lat: Int
         let lon: Int
     }

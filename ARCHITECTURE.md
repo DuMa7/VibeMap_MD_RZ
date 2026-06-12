@@ -37,7 +37,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 ┌───────────────────▼─────────────────────────────────┐
 │  State & Managers                                    │
 │  LocationManager   MapLayerManager                  │
-│  LiveLocationDetector   BackupManager   GPXImporter │
+│  BackupManager   GPXImporter                        │
 └──────┬──────────────────────┬───────────────────────┘
        │ SwiftData             │ SQLite (read-only)
 ┌──────▼──────┐        ┌──────▼───────────────┐
@@ -93,7 +93,6 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | `GPXImporter.swift` | 300 | Two-phase import: `parse()` (no DB writes, builds preview summary) and `importFiles()` (batch write). The coordinate→H3 conversion runs on a detached task. Only genuinely new hexes reach SwiftData. |
 | `HealthKitImporter.swift` | 230 | Two-phase sync from any app that writes `HKWorkoutRoute` GPS data (Komoot, Apple Fitness, Strava, etc.). `buildPreview()` fetches workout metadata and groups by source app. `importWorkouts()` fetches GPS routes via `HKWorkoutRouteQuery`, converts to H3 off-thread (same pipeline as GPXImporter), and batch-inserts new hexes. Tracks hexes per source app for the result summary. Stores a sync watermark in UserDefaults (`healthKitLastSyncDate`) for incremental syncs. Apps that only sync summaries (e.g. Garmin Connect) produce `workoutsWithRoutes = 0` in the result and are called out in the UI. |
 | `DataMigrationManager.swift` | 130 | One-time data migrations run from `ContentView.task` on each launch. Each migration is gated by a UserDefaults flag. **Migration 1 (`hasCompletedRes9ToRes10Migration_v1`)**: converts every res-9 `ExploredHex` to its res-10 centre child via `H3Wrapper.cellToCenterChild`. If a res-10 counterpart already exists the res-9 record is removed without creating a duplicate. `RegionExploration.exploredHexes` is updated in the same atomic `context.save()`. |
-| `LiveLocationDetector.swift` | 74 | Real-time municipality/canton detection from current GPS coordinate. Uses `OfflineDatabase` for the lookup. Kept for future use; currently does not drive the HUD pill directly. |
 | `RegionMetadataManager.swift` | 11 | Singleton cache of `[regionID: (name, cantonID)]`. Populated once by `MapLayerManager` during GeoJSON parse. Read-only after that. |
 
 ### Models
@@ -243,6 +242,5 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 | Legacy res-9 hexes | All recording paths (live GPS, GPX import, HealthKit sync) now always save `resolution: 10`. On first launch after updating, `DataMigrationManager.migrateRes9ToRes10` converts every legacy res-9 record to its res-10 centre child in a single atomic `context.save()`. After migration the database contains only res-10 records and the rendering ladders work correctly at all zoom levels. |
 | **Hex rendering still laggy at hex zoom** | Even with the spatial grid index and fully off-thread pipeline, rendering noticeably lags at span < 0.15 with a large hex dataset. Root cause not yet isolated — likely a combination of: (1) HexMerger producing too many `MapPolygon` rings for MapKit to render smoothly, (2) SwiftUI diffing cost when `hexOutlines` is replaced wholesale, or (3) `MapPolygon` overlay count exceeding MapKit's comfortable threshold. **Next steps to investigate**: profile with Instruments (Time Profiler + Metal System Trace), consider capping ring count, or switch from `MapPolygon` to a custom `MKOverlay`/Metal renderer that batches all rings into a single draw call. |
 | `currentZoomPercentage` does a linear scan | At canton zoom, finds the canton by a `.first(where:)` scan over `layerManager.cantons` on every render. Fine for 26 cantons, worth caching if canton list grows. |
-| `LiveLocationDetector` not wired to HUD | Detects current municipality in real time but `ContentView` uses the crosshair-based `updateCenteredRegion` instead. Either wire it or remove it. |
 | No tests on core logic | `HexMerger`, `LocationManager` session lifecycle, and `GPXImporter` batch pipeline have no unit tests. The algorithm-heavy paths are the highest risk. |
 | SQLite OR + LIMIT 1 non-deterministic | `getRegionData` queries `WHERE h3_index = res10 OR h3_index = res9 LIMIT 1` without `ORDER BY`. If both rows exist for a coordinate the returned resolution is non-deterministic. Benign in practice (same `region_id` either way) but fragile. |

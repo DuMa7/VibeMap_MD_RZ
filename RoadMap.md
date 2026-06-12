@@ -63,7 +63,7 @@
 | 2.1 | Wire up Achievement system | ✅ | `checkAchievements()` triggered on `exploredHexes.count` change and on launch |
 | 2.2 | Achievement banner UI | ✅ | Slide-down banner, 3 s auto-dismiss, queue for multiple unlocks |
 | 2.3 | Stats screen consolidation | ✅ | Single `currentUnlockedAchievements` computed property as source of truth |
-| 2.4 | Replace `GenevaDetector` with `LiveLocationDetector` | ✅ | Detects municipality from GPS in real time |
+| 2.4 | Replace `GenevaDetector` with `LiveLocationDetector` | ✅ | Detected municipality from GPS in real time. Later removed as dead code — the crosshair pipeline (`updateCenteredRegion`) superseded it and nothing read its output |
 | 2.5 | HUD pill crosshair fix | ✅ | Pill always reflects map crosshair, not GPS position |
 
 ---
@@ -148,7 +148,7 @@
 - **SwiftData** — user's personal exploration history (`ExploredHex`, `RegionExploration`).
 - **H3 Resolution** — always res-10 (~15 m cells). Res-9 was used historically for boundary fallbacks; a one-time migration converts all legacy records on first launch. Never save at res-9 again.
 - **Flush strategy** — foreground: flush every 1 hex (live map feedback). Background: flush immediately.
-- **Thread safety** — all SQLite access via pre-compiled statements; all `@State` mutations on `MainActor`; CPU-heavy work (H3, HexMerger) in `Task.detached`.
+- **Thread safety** — all SQLite access serialized on `OfflineDatabase`'s private dispatch queue (prepared statements are not thread-safe by themselves); pure helpers (`H3Wrapper`, `HexMerger`) are `nonisolated`; all `@State` mutations on `MainActor`; CPU-heavy work in `Task.detached`.
 - **Achievement IDs** — stored by `title` string in `@AppStorage` to survive app restarts.
 - **`totalHexes` repair** — `repairRegionTotals()` in `ContentView.onAppear` self-heals any region with `totalHexes == 0`.
 - **Tracking philosophy** — hexes are a scratch map; once scratched, no value in re-tracking. GPS only runs during explicit exploration sessions.

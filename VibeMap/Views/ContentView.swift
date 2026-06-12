@@ -106,10 +106,7 @@ struct ContentView: View {
     /// Controls visibility of the layer switcher panel
     @State private var showLayerPanel = false
 
-    // MARK: - Live Location
-
-    /// Detects the user's current municipality in real time — kept for future use but not driving the pill directly
-    private let liveDetector = LiveLocationDetector.shared
+    // MARK: - Crosshair Lookup
 
     /// Handle for the in-flight debounced centered-region lookup — cancelled when a newer coordinate arrives
     @State private var centeredRegionTask: Task<Void, Never>?
@@ -180,7 +177,6 @@ struct ContentView: View {
                 hasInitiallyPositioned = true
             }
             if let newValue {
-                liveDetector.detect(coordinate: newValue, cantons: layerManager.cantons)
                 updateCenteredRegion(coordinate: newValue)
             }
         }
