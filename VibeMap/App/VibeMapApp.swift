@@ -13,7 +13,7 @@ struct VibeMapApp: App {
             ContentView()
                 .environment(locationManager)
         }
-        .modelContainer(for: [ExploredHex.self, LocationPoint.self, RegionExploration.self])
+        .modelContainer(for: [ExploredHex.self, RegionExploration.self])
         .onChange(of: scenePhase) { oldPhase, newPhase in
             switch newPhase {
             case .active:

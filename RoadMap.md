@@ -5,7 +5,7 @@
 > - Update `Status` as items are completed
 > - Add notes in the `Notes` column as decisions are made
 
-**Last updated:** 2026-05-28
+**Last updated:** 2026-06-12
 
 ---
 
@@ -23,6 +23,14 @@
 
 ## Session History
 
+### 2026-06-12
+- Full codebase review; fixes landed for every confirmed finding
+- Build: `SessionSummary` Equatable conformance (HEAD didn't compile), machine-absolute pbxproj paths made relative
+- Concurrency: pure helpers marked `nonisolated`, `OfflineDatabase` serialized on a private queue, `LiveLocationDetector` deleted (output was never read)
+- UX bugs: queued achievement banners stalled invisible, confetti played invisibly (`.opacity` after `.animation`), Reset All Data left stale caches/watermark, denied-permission sessions showed a fake recording state, Health sync could permanently skip late-arriving workouts (7-day grace window added)
+- Perf: GeoJSON/backup/GPX work off-main, compact backup JSON in a background task, `fetchCount`/`propertiesToFetch`, incremental spatial grid, lazy streak, removed blanket Map animation
+- Cleanup: `LocationPoint`, `didVisit` handler, unused `H3Wrapper` methods, dead error cases, SwissCities.json, LaunchScreen.storyboard removed; docs corrected (restore semantics, hex sizes, res-9 tier, Garmin purpose string); swift-h3 pinned to exact revision
+
 ### 2026-05-28
 - Colour fix: exploration-based opacity (municipality/canton fills); flat colour only on hex outlines
 - HealthKit sync: `HealthKitImporter` for all GPS-capable apps (Komoot, Apple Fitness, Strava). Garmin Connect confirmed to not expose GPS routes via HealthKit — GPX export remains the only Garmin path
@@ -39,8 +47,8 @@
 ## Known Open Issues
 | Issue | File | Status | Notes |
 |-------|------|--------|-------|
-| Confetti animation not confirmed working | `ConfettiView.swift` | ⏳ | Deferred, address after Phase 3 |
-| Hex rendering laggy at span < 0.15 | `MapView.swift` | ⏳ | Root cause not isolated. Suspects: too many `MapPolygon` rings, SwiftUI diff cost, MapKit overlay threshold. Next step: profile with Instruments (Time Profiler + Metal System Trace). Long-term fix: custom `MKOverlay` / Metal renderer batching all rings into one draw call |
+| Confetti animation not confirmed working | `ConfettiView.swift` | ✅ | Root cause found: `.opacity` sat after the `.animation` modifier, so particles snapped invisible the moment the burst started. View rewritten — stable per-identity particles, gravity fall, end-of-fall fade. Banner queue stall fixed alongside (`.id(achievement.title)`) |
+| Hex rendering laggy at span < 0.15 | `MapView.swift` | 🔄 | Mitigations applied: spatial grid now updates incrementally (was a full O(n) geometry rebuild per new hex) and the blanket `.animation(value: currentSpan)` that re-animated every polygon per zoom was removed. Re-test on device. If still laggy: profile with Instruments (Time Profiler + Metal System Trace); long-term fix: custom `MKOverlay` / Metal renderer batching all rings into one draw call |
 
 ---
 
@@ -97,7 +105,7 @@
 ## Phase 5 — Data & Reliability
 | # | Feature | Status | Priority | Notes |
 |---|---------|--------|----------|-------|
-| 5.1 | Merge GeoJSON parsing | ⏳ | 🟠 Medium-High | `municipalities.geojson` parsed twice at startup — merge into single pass |
+| 5.1 | Merge GeoJSON parsing | ✅ | 🟠 Medium-High | Single-pass loader in `MapLayerManager`; the whole parse now also runs off the main thread |
 | 5.2 | Backup system overhaul | ⏳ | 🔴 High | Current backup not confirmed working — needs investigation + iCloud auto-backup + restore preview |
 | 5.3 | Expand beyond Switzerland | ⏳ | 🔴 High | Architecture is country-agnostic — main work is generating SQLite databases for other countries |
 | 5.4 | Simplify GeoJSON geometries | ⏳ | 🟠 Medium-High | Use Mapshaper to simplify canton/municipality polygons 70–80%. Do this when adding each new country |

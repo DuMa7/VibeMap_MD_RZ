@@ -1,13 +1,15 @@
 import Foundation
 
-struct BackupData: Codable {
+// The Codable DTOs are nonisolated so encoding can run inside detached tasks
+// (the project's default actor isolation is MainActor).
+nonisolated struct BackupData: Codable {
     let version: Int
     let timestamp: Date
     let hexes: [HexBackupDTO]
     let regions: [RegionBackupDTO]
 }
 
-struct HexBackupDTO: Codable {
+nonisolated struct HexBackupDTO: Codable {
     let h3Index: String
     let resolution: Int
     let regionID: String?
@@ -16,7 +18,7 @@ struct HexBackupDTO: Codable {
     let lastVisited: Date
 }
 
-struct RegionBackupDTO: Codable {
+nonisolated struct RegionBackupDTO: Codable {
     let regionID: String
     let name: String
     let type: String
@@ -35,12 +37,10 @@ struct BackupPreview {
 }
 
 enum BackupError: LocalizedError {
-    case encodingFailed
     case noData
 
     var errorDescription: String? {
         switch self {
-        case .encodingFailed: return "Failed to encode backup data."
         case .noData: return "No data to back up."
         }
     }

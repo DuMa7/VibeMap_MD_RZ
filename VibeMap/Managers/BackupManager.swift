@@ -9,6 +9,9 @@ class BackupManager {
     private static let autoBackupFilename = "vibemap_backup.json"
     private static let previousBackupFilename = "vibemap_backup_previous.json"
 
+    /// Keeps the auto-backup write alive when the app is heading to the background.
+    private var backupTaskID: UIBackgroundTaskIdentifier = .invalid
+
     init(modelContext: ModelContext) {
         self.modelContext = modelContext
     }
@@ -33,9 +36,10 @@ class BackupManager {
         return BackupData(version: 2, timestamp: Date(), hexes: hexDTOs, regions: regionDTOs)
     }
 
-    private func encode(_ backup: BackupData) throws -> Data {
+    /// Compact JSON — no pretty-printing, which roughly halved the file size.
+    /// nonisolated static so encoding can run inside detached tasks.
+    private nonisolated static func encode(_ backup: BackupData) throws -> Data {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
         encoder.dateEncodingStrategy = .iso8601
         return try encoder.encode(backup)
     }
@@ -43,31 +47,59 @@ class BackupManager {
     // MARK: - Export (share sheet)
 
     /// Writes the backup to a temp file and returns the URL for sharing.
-    func createBackupFile() throws -> URL {
-        let data = try encode(try buildBackupData())
+    /// The SwiftData fetch runs on the main actor; encoding and writing run detached.
+    func createBackupFile() async throws -> URL {
+        let backup = try buildBackupData()
         let dateStr = ISO8601DateFormatter().string(from: Date()).prefix(10)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("vibemap_backup_\(dateStr).json")
-        try data.write(to: url, options: .atomic)
+        try await Task.detached(priority: .userInitiated) {
+            let data = try Self.encode(backup)
+            try data.write(to: url, options: .atomic)
+        }.value
         return url
     }
 
     // MARK: - Auto-backup (app Documents, included in iCloud device backup)
 
-    func saveAutoBackup() throws {
-        let data = try encode(try buildBackupData())
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+    /// Builds the snapshot on the main actor (SwiftData), then encodes and writes it
+    /// off-main, wrapped in a UIKit background task so the write completes even when
+    /// triggered by the app moving to the background.
+    func saveAutoBackup() async throws {
+        let backup = try buildBackupData()
 
-        // Rotate: current → previous before overwriting
+        beginBackgroundTask()
+        defer { endBackgroundTask() }
+
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let current = docs.appendingPathComponent(Self.autoBackupFilename)
         let previous = docs.appendingPathComponent(Self.previousBackupFilename)
-        if FileManager.default.fileExists(atPath: current.path) {
-            try? FileManager.default.removeItem(at: previous)
-            try? FileManager.default.moveItem(at: current, to: previous)
-        }
 
-        try data.write(to: current, options: .atomic)
-        print("💾 Auto-backup saved (\(data.count / 1024) KB)")
+        try await Task.detached(priority: .utility) {
+            let data = try Self.encode(backup)
+
+            // Rotate: current → previous before overwriting
+            if FileManager.default.fileExists(atPath: current.path) {
+                try? FileManager.default.removeItem(at: previous)
+                try? FileManager.default.moveItem(at: current, to: previous)
+            }
+
+            try data.write(to: current, options: .atomic)
+            print("💾 Auto-backup saved (\(data.count / 1024) KB)")
+        }.value
+    }
+
+    private func beginBackgroundTask() {
+        backupTaskID = UIApplication.shared.beginBackgroundTask(withName: "AutoBackup") { [weak self] in
+            self?.endBackgroundTask()
+        }
+    }
+
+    private func endBackgroundTask() {
+        if backupTaskID != .invalid {
+            UIApplication.shared.endBackgroundTask(backupTaskID)
+            backupTaskID = .invalid
+        }
     }
 
     /// Date of the most recent auto-backup, or nil if none exists.
@@ -124,6 +156,5 @@ class BackupManager {
     private func clearDatabase() throws {
         try modelContext.delete(model: ExploredHex.self)
         try modelContext.delete(model: RegionExploration.self)
-        try modelContext.delete(model: LocationPoint.self)
     }
 }

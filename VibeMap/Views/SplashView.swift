@@ -33,16 +33,14 @@ struct SplashView: View {
                             )
                     }
                     
-                    // --- CHANGE IS HERE ---
-                    // Center Earth (Using SF Symbol for immediate testing)
+                    // Center globe
                     Image(systemName: "globe.americas.fill")
                         .resizable()
                         .scaledToFit()
-                        .foregroundStyle(.white) // Color it white to match theme
-                        .frame(width: 65, height: 65) // Slightly larger than the hexagon looked
+                        .foregroundStyle(.white)
+                        .frame(width: 65, height: 65)
                         .rotationEffect(.degrees(rotationAngle))
                         .shadow(color: .white.opacity(0.5), radius: 10)
-                    // ----------------------
                 }
                 
                 // App name

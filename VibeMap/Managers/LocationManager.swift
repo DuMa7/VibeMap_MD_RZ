@@ -40,6 +40,11 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     /// Populated at the end of each session; ContentView observes this to present the summary sheet.
     var completedSessionSummary: SessionSummary? = nil
 
+    /// Set to true when a session can't start (or continue) because location access
+    /// is denied or restricted. ContentView observes this, shows an alert with a
+    /// shortcut to the app's Settings page, and resets it to false.
+    var shouldShowLocationDeniedAlert: Bool = false
+
     private var sessionStartDate: Date? = nil
 
     /// Last hex for which an unexplored-area check was run — prevents re-prompting
@@ -80,6 +85,13 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func startSession() {
         guard !isSessionActive else { return }
+        // Refuse to start when location access is denied or restricted — otherwise
+        // the UI would show a recording state while no GPS fix can ever arrive.
+        guard authorizationStatus != .denied && authorizationStatus != .restricted else {
+            shouldShowLocationDeniedAlert = true
+            print("🚫 Session not started: location access is denied/restricted")
+            return
+        }
         isSessionActive = true
         shouldPromptUnexploredArea = false
         lastCheckedHex = nil
@@ -94,10 +106,12 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         print("▶️ Exploration session started")
     }
 
-    func stopSession() {
+    /// Ends the active session. Pass `showSummary: false` when the session is being
+    /// aborted (e.g. permission revoked) and the summary sheet would be noise.
+    func stopSession(showSummary: Bool = true) {
         guard isSessionActive else { return }
         flushPendingData()
-        if let startDate = sessionStartDate {
+        if showSummary, let startDate = sessionStartDate {
             completedSessionSummary = buildSessionSummary(startDate: startDate)
         }
         isSessionActive = false
@@ -111,16 +125,28 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         print("⏹️ Exploration session stopped")
     }
 
+    /// Clears every in-memory recording cache. Called after the user erases all
+    /// exploration data in Settings — otherwise an active session would keep
+    /// suppressing hexes that no longer exist in the database, and stale pending
+    /// hexes could be flushed back in after the wipe.
+    func clearRecordingCaches() {
+        pendingHexes.removeAll()
+        exploredHexSet.removeAll()
+        lastSavedHex = nil
+        lastCheckedHex = nil
+    }
+
     private func buildSessionSummary(startDate: Date) -> SessionSummary {
         let duration = Date().timeIntervalSince(startDate)
         guard let context = modelContext else {
             return SessionSummary(duration: duration, newHexCount: 0, newRegionNames: [], currentStreak: 0)
         }
 
+        // Count-only fetch — no model objects are materialized
         let hexDesc = FetchDescriptor<ExploredHex>(
             predicate: #Predicate { $0.firstVisited >= startDate }
         )
-        let newHexCount = (try? context.fetch(hexDesc))?.count ?? 0
+        let newHexCount = (try? context.fetchCount(hexDesc)) ?? 0
 
         let regionDesc = FetchDescriptor<RegionExploration>(
             predicate: #Predicate { $0.firstVisited >= startDate }
@@ -129,7 +155,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             .map { $0.name }
             .sorted()
 
-        let allDates = ((try? context.fetch(FetchDescriptor<ExploredHex>())) ?? []).map { $0.firstVisited }
+        // The streak needs every hex's firstVisited — fetch just that column
+        var datesDesc = FetchDescriptor<ExploredHex>()
+        datesDesc.propertiesToFetch = [\.firstVisited]
+        let allDates = ((try? context.fetch(datesDesc)) ?? []).map { $0.firstVisited }
         let streak = StreakCalculator.calculate(dates: allDates)
 
         return SessionSummary(duration: duration, newHexCount: newHexCount, newRegionNames: newRegionNames, currentStreak: streak.current)
@@ -137,7 +166,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
 
     private func buildExploredSet() {
         guard let context = modelContext else { return }
-        let allHexes = (try? context.fetch(FetchDescriptor<ExploredHex>())) ?? []
+        // The suppression set needs only h3Index — avoid materializing full records
+        var desc = FetchDescriptor<ExploredHex>()
+        desc.propertiesToFetch = [\.h3Index]
+        let allHexes = (try? context.fetch(desc)) ?? []
         exploredHexSet = Set(allHexes.map { $0.h3Index })
         print("🧠 Suppression set: \(exploredHexSet.count) known hexes loaded")
     }
@@ -279,6 +311,14 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
                 // Low-power monitoring so userLocation stays roughly updated
                 manager.startMonitoringSignificantLocationChanges()
             }
+        case .denied, .restricted:
+            // Permission denied at the in-session prompt, or revoked in Settings.
+            // A "recording" session that can never receive a fix is a lie — stop it
+            // without the summary sheet and tell the user why.
+            if isSessionActive {
+                stopSession(showSummary: false)
+                shouldShowLocationDeniedAlert = true
+            }
         default:
             break
         }
@@ -292,7 +332,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         // can map to the wrong hex and produce phantom exploration records.
         guard locationAge < 10 else { return }
         // Negative accuracy = invalid fix; >100 m is too imprecise to reliably resolve a
-        // res-10 hex (~15 m edge length). Tighter than Apple's default to reduce false positives.
+        // res-10 hex (~66 m edge length). Tighter than Apple's default to reduce false positives.
         guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else { return }
 
         userLocation = location.coordinate
@@ -374,47 +414,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("❌ Location error: \(error.localizedDescription)")
     }
-    
-    // CLVisit events fire when CoreLocation detects the user has arrived at or departed from
-    // a significant place. They are delivered even when the app is not running in the foreground,
-    // making them useful for passively catching hex transitions that occur outside active sessions.
-    func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-        userLocation = visit.coordinate
 
-        // Only record hexes during an active exploration session
-        guard isSessionActive else { return }
-
-        beginBackgroundTask()
-
-        let latRads = visit.coordinate.latitude * .pi / 180.0
-        let lonRads = visit.coordinate.longitude * .pi / 180.0
-        var coord = LatLng(lat: latRads, lng: lonRads)
-        
-        var h3Index10: H3Index = 0
-        var h3Index9: H3Index = 0
-        latLngToCell(&coord, Int32(10), &h3Index10)
-        latLngToCell(&coord, Int32(9), &h3Index9)
-        
-        let hex10 = String(h3Index10, radix: 16)
-        let hex9 = String(h3Index9, radix: 16)
-        
-        if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
-            let activeHex = hex10   // always res-10
-
-            if activeHex != lastSavedHex {
-                lastSavedHex = activeHex
-                if !exploredHexSet.contains(activeHex) {
-                    pendingHexes[activeHex] = (resolution: 10, regionID: regionData.regionID)
-                    flushPendingData()
-                }
-            }
-        }
-
-        endBackgroundTask()
-    }
-    
-    deinit {
-        flushPendingData()
-        endBackgroundTask()
-    }
+    // Visit monitoring (CLVisit) is intentionally not used: startMonitoringVisits()
+    // was never called, so the old didVisit handler was dead code. Sessions plus
+    // significant-change monitoring cover every recording path. No deinit either —
+    // LocationManager lives for the app's lifetime.
 }

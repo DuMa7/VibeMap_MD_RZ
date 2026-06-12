@@ -98,6 +98,9 @@ struct ContentView: View {
     /// Drives the pulsing animation on the recording dot in the HUD pill
     @State private var recordingPulse: Bool = false
 
+    /// Controls the alert shown when a session can't run because location access is denied
+    @State private var showLocationDeniedAlert = false
+
     // MARK: - Layer State
 
     /// Base map style + overlay toggle state — shared with MapView
@@ -121,7 +124,7 @@ struct ContentView: View {
 
     // MARK: - Streak Cache
 
-    /// Current and best exploration streaks — recomputed when hex count changes
+    /// Current and best exploration streaks — computed lazily when the stats overlay opens
     @State private var streakResult = StreakCalculator.Result(current: 0, best: 0)
     
     // MARK: - Body
@@ -139,7 +142,7 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.5), value: isLoading)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
-                try? BackupManager(modelContext: modelContext).saveAutoBackup()
+                Task { try? await BackupManager(modelContext: modelContext).saveAutoBackup() }
             }
         }
         .task {
@@ -156,7 +159,6 @@ struct ContentView: View {
                 withAnimation { isLoading = false }
                 repairRegionTotals()
                 rebuildCantonCounts()
-                rebuildStreak()
                 checkAchievements()
                 if !locationManager.isSessionActive {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -180,10 +182,11 @@ struct ContentView: View {
                 updateCenteredRegion(coordinate: newValue)
             }
         }
-        // Re-check achievements and streak whenever the user enters a new hex
+        // Re-check achievements whenever the user enters a new hex.
+        // (The streak is computed lazily when the stats overlay opens —
+        // recomputing it here cost O(all hexes) on every recorded hex.)
         .onChange(of: exploredHexes.count) { _, _ in
             checkAchievements()
-            rebuildStreak()
         }
         // Rebuild canton caches when a new municipality is discovered
         .onChange(of: regions.count) { _, _ in
@@ -216,6 +219,24 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+        // Location-permission refusal: LocationManager raises this when a session
+        // can't start (or got aborted) because access is denied or restricted.
+        .onChange(of: locationManager.shouldShowLocationDeniedAlert) { _, denied in
+            if denied {
+                locationManager.shouldShowLocationDeniedAlert = false
+                showLocationDeniedAlert = true
+            }
+        }
+        .alert("Location Access Needed", isPresented: $showLocationDeniedAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Not Now", role: .cancel) { }
+        } message: {
+            Text("VibeMap can't record explored areas without location access. Allow location for VibeMap in iPhone Settings — \"Always\" lets exploring continue in the background.")
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showPassport) {
@@ -316,7 +337,10 @@ struct ContentView: View {
                 Spacer()
                 
                 // Explorer Profile / Stats button
-                Button(action: { withAnimation { showStats = true } }) {
+                Button(action: {
+                    rebuildStreak()   // lazy: the overlay is the only place streaks are shown
+                    withAnimation { showStats = true }
+                }) {
                     Image(systemName: "trophy.fill")
                         .foregroundStyle(.primary)
                         .padding(11)
@@ -426,11 +450,19 @@ struct ContentView: View {
                 AchievementBannerView(achievement: achievement) {
                     showNextBanner()
                 }
+                // Identity must change per achievement: queued banners replace each
+                // other while the view stays in the hierarchy, and with a stable
+                // identity SwiftUI keeps the old @State (isVisible already false,
+                // onAppear never re-fires) — the second banner would stay invisible
+                // and the queue would stall.
+                .id(achievement.title)
                 .zIndex(1)
-                
+
                 ConfettiView()
                     .ignoresSafeArea()
                     .allowsHitTesting(false) // Prevents confetti particles from blocking map taps
+                    // Same identity trick: replay the confetti burst for each queued banner.
+                    .id("confetti-\(achievement.title)")
                     .zIndex(2)
             }
             
@@ -676,10 +708,12 @@ struct ContentView: View {
 
                 centeredMunicipalityName = getPrimaryName(from: metadata.name)
 
-                // Look up total hexes for the Location Details progress bar
+                // Look up total hexes for the Location Details progress bar.
+                // Fall back to the offline database for municipalities the user
+                // hasn't visited yet (no RegionExploration record exists).
                 centeredMuniTotalHexes = regions.first(where: {
                     $0.regionID == regionData.regionID
-                })?.totalHexes ?? 0
+                })?.totalHexes ?? OfflineDatabase.shared.getTotalHexes(for: regionData.regionID)
 
                 if let canton = layerManager.cantons.first(where: { $0.id == metadata.cantonID }) {
                     centeredCantonName = getPrimaryName(from: canton.name)

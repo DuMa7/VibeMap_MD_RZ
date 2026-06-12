@@ -22,11 +22,16 @@ struct MapView: View {
     }
 
     /// Spatial index: grid bucket → h3Index strings of hexes whose centroid falls in that bucket.
-    /// Rebuilt entirely off the main thread when `exploredHexes` changes.
+    /// Updated incrementally off the main thread as hexes are added; fully rebuilt
+    /// only when hexes were removed (reset / restore).
     /// Lookup at render time is O(buckets_in_viewport) ≈ O(36) instead of O(total_hexes).
     @State private var spatialGrid: [GridKey: [String]] = [:]
 
-    /// Handle for the in-flight grid rebuild — cancelled and replaced on each exploredHexes change.
+    /// h3 indices currently present in `spatialGrid` — lets updates diff out the
+    /// genuinely new hexes instead of recomputing geometry for the whole table.
+    @State private var gridIndexedHexes: Set<String> = []
+
+    /// Handle for the in-flight grid update — cancelled and replaced on each exploredHexes change.
     @State private var spatialGridTask: Task<Void, Never>?
 
     // MARK: - Outline State
@@ -96,18 +101,21 @@ struct MapView: View {
         }
         .mapStyle(layerSettings.baseStyle.mapStyle)
         .mapControlVisibility(.hidden)
-        .animation(.easeInOut(duration: 0.5), value: currentSpan)
+        // A blanket .animation(value: currentSpan) used to live here. It implicitly
+        // re-animated every MapPolygon on each zoom-gesture end — a prime suspect
+        // for the hex-zoom lag. If layer-transition polish returns (roadmap 3.3),
+        // use scoped transitions rather than animating the whole Map.
         .onMapCameraChange(frequency: .onEnd) { context in
             currentSpan = context.region.span.latitudeDelta
             centerCoordinate = context.region.center
         }
         .onAppear {
             rebuildRegionCaches()
-            // Grid rebuild triggers rebuildHexOutlines when complete — no direct call needed.
-            rebuildSpatialGrid(exploredHexes)
+            // Grid update triggers rebuildHexOutlines when complete — no direct call needed.
+            updateSpatialGrid(exploredHexes)
         }
         .onChange(of: exploredHexes) { _, newHexes in
-            rebuildSpatialGrid(newHexes)
+            updateSpatialGrid(newHexes)
         }
         .onChange(of: regions) { _, _ in
             rebuildRegionCaches()
@@ -121,36 +129,73 @@ struct MapView: View {
         }
     }
 
-    // MARK: - Spatial Grid Builder
+    // MARK: - Spatial Grid Updates
 
-    /// Rebuilds the spatial index from scratch whenever `exploredHexes` changes.
+    /// Result of the off-main grid diff: either a small incremental merge
+    /// (steady-state walking) or a full replacement (hexes were removed).
+    private nonisolated enum GridUpdate {
+        case rebuild(grid: [GridKey: [String]], allIndices: [String])
+        case merge(additions: [GridKey: [String]], newIndices: [String])
+        case noChange
+    }
+
+    /// Updates the spatial index whenever `exploredHexes` changes.
     ///
     /// The main thread does one O(n) pass to snapshot h3Index strings, then yields.
-    /// H3 centroid computation (the expensive part) runs entirely in a detached task.
-    /// When the grid is ready it is assigned back on the main actor, then
-    /// `rebuildHexOutlines` is triggered so the map reflects the updated data.
-    private func rebuildSpatialGrid(_ hexes: [ExploredHex]) {
+    /// The diff against already-indexed hexes AND the H3 centroid computation run
+    /// in a detached task. Steady-state walking adds a handful of hexes: geometry
+    /// is computed only for those (previously every change recomputed the whole
+    /// table). Removals (reset, restore, migration) trigger a full rebuild.
+    private func updateSpatialGrid(_ hexes: [ExploredHex]) {
         let indices    = hexes.map { $0.h3Index }   // snapshot — just String references, O(n) but cheap
+        let known      = gridIndexedHexes           // CoW snapshot for the detached diff
         let bucketSize = Self.gridBucketSize
 
         spatialGridTask?.cancel()
         spatialGridTask = Task {
-            let grid = await Task.detached(priority: .userInitiated) {
-                var g = [GridKey: [String]]()
-                g.reserveCapacity(max(1, indices.count / 50))
-                for h3Index in indices {
-                    guard let c = H3Wrapper.cellCenter(h3Index: h3Index) else { continue }
-                    let key = GridKey(lat: Int(floor(c.latitude  / bucketSize)),
-                                     lon: Int(floor(c.longitude / bucketSize)))
-                    g[key, default: []].append(h3Index)
+            let update = await Task.detached(priority: .userInitiated) { () -> GridUpdate in
+                let newIndices = indices.filter { !known.contains($0) }
+                // Pure additions ⇔ every previously indexed hex is still present:
+                // |indices| − |newIndices| == |known| (h3 indices are unique).
+                if indices.count - newIndices.count == known.count {
+                    guard !newIndices.isEmpty else { return .noChange }
+                    return .merge(additions: Self.bucketize(newIndices, bucketSize: bucketSize),
+                                  newIndices: newIndices)
                 }
-                return g
+                return .rebuild(grid: Self.bucketize(indices, bucketSize: bucketSize),
+                                allIndices: indices)
             }.value
             guard !Task.isCancelled else { return }
-            spatialGrid = grid
+
+            switch update {
+            case .noChange:
+                return
+            case .merge(let additions, let newIndices):
+                for (key, hexes) in additions {
+                    spatialGrid[key, default: []].append(contentsOf: hexes)
+                }
+                gridIndexedHexes.formUnion(newIndices)
+            case .rebuild(let grid, let allIndices):
+                spatialGrid = grid
+                gridIndexedHexes = Set(allIndices)
+                print("🗺️ Spatial grid: full rebuild — \(allIndices.count) hexes in \(grid.count) buckets")
+            }
             if currentSpan < 0.15 { rebuildHexOutlines() }
-            print("🗺️ Spatial grid: \(grid.values.reduce(0) { $0 + $1.count }) hexes in \(grid.count) buckets")
         }
+    }
+
+    /// Assigns each index to its 0.1° grid bucket via the H3 cell centroid.
+    /// Pure geometry — nonisolated so it runs inside the detached update task.
+    private nonisolated static func bucketize(_ indices: [String], bucketSize: Double) -> [GridKey: [String]] {
+        var g = [GridKey: [String]]()
+        g.reserveCapacity(max(1, indices.count / 50))
+        for h3Index in indices {
+            guard let c = H3Wrapper.cellCenter(h3Index: h3Index) else { continue }
+            let key = GridKey(lat: Int(floor(c.latitude  / bucketSize)),
+                              lon: Int(floor(c.longitude / bucketSize)))
+            g[key, default: []].append(h3Index)
+        }
+        return g
     }
 
     // MARK: - Outline Builder

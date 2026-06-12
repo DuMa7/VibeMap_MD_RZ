@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(LocationManager.self) private var locationManager
 
     @Query private var hexes: [ExploredHex]
     @Query private var regions: [RegionExploration]
@@ -68,14 +69,16 @@ struct SettingsView: View {
                     }
 
                     Button {
-                        do {
-                            try manager.saveAutoBackup()
-                            lastBackupDate = manager.lastAutoBackupDate()
-                            alertMessage = "Backup saved to device (\(hexes.count) hexes, \(regions.count) towns)."
-                            showAlert = true
-                        } catch {
-                            alertMessage = "Backup failed: \(error.localizedDescription)"
-                            showAlert = true
+                        Task {
+                            do {
+                                try await manager.saveAutoBackup()
+                                lastBackupDate = manager.lastAutoBackupDate()
+                                alertMessage = "Backup saved to device (\(hexes.count) hexes, \(regions.count) towns)."
+                                showAlert = true
+                            } catch {
+                                alertMessage = "Backup failed: \(error.localizedDescription)"
+                                showAlert = true
+                            }
                         }
                     } label: {
                         Label("Back Up Now", systemImage: "icloud.and.arrow.up")
@@ -116,7 +119,7 @@ struct SettingsView: View {
                                 do {
                                     let importer = HealthKitImporter(modelContext: modelContext)
                                     try await importer.requestAuthorization()
-                                    let preview = try await importer.buildPreview(since: healthLastSyncDate)
+                                    let preview = try await importer.buildPreview(since: importer.incrementalSyncStart)
                                     if preview.workoutCount == 0 {
                                         alertMessage = healthLastSyncDate == nil
                                             ? "No activities found in Apple Health."
@@ -169,15 +172,17 @@ struct SettingsView: View {
                 // MARK: Manual export / import
                 Section("Manual Transfer") {
                     Button {
-                        do {
-                            exportURL = try manager.createBackupFile()
-                            showShareSheet = true
-                        } catch BackupError.noData {
-                            alertMessage = "Nothing to export yet — explore some hexes first."
-                            showAlert = true
-                        } catch {
-                            alertMessage = "Export failed: \(error.localizedDescription)"
-                            showAlert = true
+                        Task {
+                            do {
+                                exportURL = try await manager.createBackupFile()
+                                showShareSheet = true
+                            } catch BackupError.noData {
+                                alertMessage = "Nothing to export yet — explore some hexes first."
+                                showAlert = true
+                            } catch {
+                                alertMessage = "Export failed: \(error.localizedDescription)"
+                                showAlert = true
+                            }
                         }
                     } label: {
                         Label("Export Backup", systemImage: "square.and.arrow.up")
@@ -197,7 +202,21 @@ struct SettingsView: View {
                         do {
                             try modelContext.delete(model: ExploredHex.self)
                             try modelContext.delete(model: RegionExploration.self)
-                            try modelContext.delete(model: LocationPoint.self)
+                            try modelContext.save()
+
+                            // In-memory recording caches still reference the deleted hexes;
+                            // without this an active session would keep suppressing them.
+                            locationManager.clearRecordingCaches()
+
+                            // Clear the Health sync watermark so a future sync can re-import
+                            // the workouts whose hexes were just erased.
+                            UserDefaults.standard.removeObject(forKey: HealthKitImporter.lastSyncKey)
+
+                            // ContentView.checkAchievements rewrites this key on the next
+                            // hex-count change anyway, but clear it explicitly so a fresh
+                            // start never inherits stale unlocks through that side path.
+                            UserDefaults.standard.removeObject(forKey: "unlockedAchievementTitles")
+
                             alertMessage = "All exploration data erased."
                             showAlert = true
                         } catch {
@@ -300,7 +319,7 @@ struct SettingsView: View {
             ) { result in
                 switch result {
                 case .success(let urls):
-                    // Read all files while security scopes are open
+                    // Read all files while security scopes are open (must stay synchronous)
                     var items: [(filename: String, data: Data)] = []
                     for url in urls {
                         guard url.startAccessingSecurityScopedResource() else { continue }
@@ -315,17 +334,23 @@ struct SettingsView: View {
                         return
                     }
 
-                    // Parse GPX off the picker callback (still on main thread but fast XML parse)
-                    let parsed = GPXImporter.parse(items)
-                    guard !parsed.isEmpty else {
-                        alertMessage = "No track points found in the selected file(s)."
-                        showAlert = true
-                        return
+                    // Parse off the main thread — multi-file Strava/Garmin exports can
+                    // hold tens of thousands of track points and used to freeze the UI here.
+                    isImportingGPX = true
+                    Task {
+                        let parsed = await Task.detached(priority: .userInitiated) {
+                            GPXImporter.parse(items)
+                        }.value
+                        isImportingGPX = false
+                        guard !parsed.isEmpty else {
+                            alertMessage = "No track points found in the selected file(s)."
+                            showAlert = true
+                            return
+                        }
+                        pendingGPXFiles = parsed
+                        gpxSummary = GPXImporter.summarise(parsed)
+                        showGPXPreview = true
                     }
-
-                    pendingGPXFiles = parsed
-                    gpxSummary = GPXImporter.summarise(parsed)
-                    showGPXPreview = true
 
                 case .failure(let error):
                     alertMessage = "File picker error: \(error.localizedDescription)"
@@ -685,8 +710,11 @@ private struct HealthSyncPreviewSheet: View {
                 }
 
                 Group {
-                    if let lastSync = lastSyncDate {
-                        Text("Activities since \(lastSync.formatted(date: .abbreviated, time: .omitted)).")
+                    if lastSyncDate != nil {
+                        // The fetch reaches back a grace window before the last sync to catch
+                        // late-arriving workouts, so some listed activities may already be
+                        // imported — dedup makes confirming them a no-op.
+                        Text("Includes a re-check of recent activities — anything already on your map is skipped automatically.")
                     } else {
                         Text("Only activities with GPS route data will produce hexes.")
                     }

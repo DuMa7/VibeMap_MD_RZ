@@ -5,25 +5,21 @@ import H3
 import UniformTypeIdentifiers
 
 // MARK: - Data Types
+// All parse-side types are nonisolated so parsing can run inside detached tasks
+// (the project's default actor isolation is MainActor).
 
-struct GPXPoint {
+nonisolated struct GPXPoint {
     let coordinate: CLLocationCoordinate2D
     let timestamp: Date?
 }
 
-struct GPXFile {
+nonisolated struct GPXFile {
     let name: String?
     let points: [GPXPoint]
-
-    var dateRange: (first: Date, last: Date)? {
-        let dated = points.compactMap { $0.timestamp }
-        guard let first = dated.min(), let last = dated.max() else { return nil }
-        return (first, last)
-    }
 }
 
 /// Aggregated summary shown in the import preview sheet (before writing to DB).
-struct GPXImportSummary {
+nonisolated struct GPXImportSummary {
     let fileCount: Int
     let totalPoints: Int
     let earliestDate: Date?
@@ -37,20 +33,18 @@ struct GPXImportSummary {
     }
 }
 
-struct GPXImportResult {
+nonisolated struct GPXImportResult {
     let newHexCount: Int
     let newRegionCount: Int
     let processedPoints: Int
 }
 
-enum GPXImportError: LocalizedError {
+nonisolated enum GPXImportError: LocalizedError {
     case noTrackPoints
-    case parseError
 
     var errorDescription: String? {
         switch self {
         case .noTrackPoints: return "No track points found in this file."
-        case .parseError:    return "Could not read the GPX file."
         }
     }
 }
@@ -69,7 +63,7 @@ extension UTType {
 ///
 /// SAX is used instead of a DOM parser to avoid loading the full XML tree into memory —
 /// Strava and Garmin exports can contain tens of thousands of track points per file.
-final class GPXParser: NSObject, XMLParserDelegate {
+nonisolated final class GPXParser: NSObject, XMLParserDelegate {
 
     private var points: [GPXPoint] = []
     private var trackName: String?
@@ -169,7 +163,7 @@ final class GPXImporter {
 
     /// Parses one or more GPX data blobs without touching the database.
     /// Call this first to build the preview summary shown before import.
-    static func parse(_ dataItems: [(filename: String, data: Data)]) -> [GPXFile] {
+    nonisolated static func parse(_ dataItems: [(filename: String, data: Data)]) -> [GPXFile] {
         dataItems.compactMap { item in
             let parser = GPXParser()
             guard let file = parser.parse(data: item.data), !file.points.isEmpty else { return nil }
