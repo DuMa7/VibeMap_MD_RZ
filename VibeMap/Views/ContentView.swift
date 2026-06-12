@@ -54,7 +54,10 @@ struct ContentView: View {
     
     /// Controls visibility of the Explorer Profile stats overlay
     @State private var showStats = false
-    
+
+    /// Controls visibility of the Canton Passport sheet
+    @State private var showPassport = false
+
     /// Controls visibility of the Settings sheet
     @State private var showSettings = false
     
@@ -83,16 +86,48 @@ struct ContentView: View {
     /// Controls the "Exploring somewhere new today?" launch prompt
     @State private var showExplorationPrompt = false
 
+    /// Controls the "New territory ahead!" prompt triggered by a location move into an unexplored hex
+    @State private var showUnexploredAreaPrompt = false
+
+    /// Controls the session summary sheet shown after stopping a session
+    @State private var showSessionSummary = false
+
+    /// Snapshot of the last completed session — drives the summary sheet
+    @State private var lastSessionSummary: SessionSummary? = nil
+
     /// Drives the pulsing animation on the recording dot in the HUD pill
     @State private var recordingPulse: Bool = false
 
-    // MARK: - Live Location
+    // MARK: - Layer State
 
-    /// Detects the user's current municipality in real time — kept for future use but not driving the pill directly
-    private let liveDetector = LiveLocationDetector.shared
+    /// Base map style + overlay toggle state — shared with MapView
+    @State private var layerSettings = MapLayerSettings()
+
+    /// Controls visibility of the layer switcher panel
+    @State private var showLayerPanel = false
+
+    // MARK: - Crosshair Lookup
+
+    /// Handle for the in-flight debounced centered-region lookup — cancelled when a newer coordinate arrives
+    @State private var centeredRegionTask: Task<Void, Never>?
+
+    // MARK: - Canton Count Cache
+
+    /// cantonID → number of visited municipalities in that canton — O(1) HUD lookups
+    @State private var visitedCountPerCanton: [String: Int] = [:]
+
+    /// Total distinct cantons visited — cached to avoid O(N) compactMap on every render
+    @State private var cachedVisitedCantonCount: Int = 0
+
+    // MARK: - Streak Cache
+
+    /// Current and best exploration streaks — recomputed when hex count changes
+    @State private var streakResult = StreakCalculator.Result(current: 0, best: 0)
     
     // MARK: - Body
-    
+
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         ZStack(alignment: .top) {
             if isLoading {
@@ -102,14 +137,26 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.5), value: isLoading)
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                try? BackupManager(modelContext: modelContext).saveAutoBackup()
+            }
+        }
+        .task {
+            // Run data migrations before any view logic uses the database.
+            // Each migration is gated by a UserDefaults flag — no-op after first completion.
+            await DataMigrationManager.runPendingMigrations(context: modelContext)
+        }
         .onAppear {
             // Inject the SwiftData context into LocationManager so it can persist hexes
             locationManager.modelContext = modelContext
-            
+
             // Dismiss splash screen after 2.5s then seed initial achievement state
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
                 withAnimation { isLoading = false }
                 repairRegionTotals()
+                rebuildCantonCounts()
+                rebuildStreak()
                 checkAchievements()
                 if !locationManager.isSessionActive {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -130,13 +177,17 @@ struct ContentView: View {
                 hasInitiallyPositioned = true
             }
             if let newValue {
-                liveDetector.detect(coordinate: newValue, cantons: layerManager.cantons)
                 updateCenteredRegion(coordinate: newValue)
             }
         }
-        // Re-check achievements whenever the user enters a new hex
+        // Re-check achievements and streak whenever the user enters a new hex
         .onChange(of: exploredHexes.count) { _, _ in
             checkAchievements()
+            rebuildStreak()
+        }
+        // Rebuild canton caches when a new municipality is discovered
+        .onChange(of: regions.count) { _, _ in
+            rebuildCantonCounts()
         }
         // Update crosshair state when the map stops panning
         .onChange(of: centerCoordinate) { _, newValue in
@@ -144,7 +195,39 @@ struct ContentView: View {
                 updateCenteredRegion(coordinate: newValue)
             }
         }
+        // Session summary: presented as a sheet when LocationManager posts a completed summary.
+        // Snapshot into local state so the sheet has a stable value even if LocationManager clears it.
+        .onChange(of: locationManager.completedSessionSummary) { _, summary in
+            if let summary {
+                lastSessionSummary = summary
+                showSessionSummary = true
+            }
+        }
+        // Unexplored-area detection: LocationManager signals when a non-session location
+        // update lands in a hex the user has never explored. Consume the flag immediately
+        // so a second location event doesn't fire a second prompt.
+        .onChange(of: locationManager.shouldPromptUnexploredArea) { _, detected in
+            if detected {
+                locationManager.shouldPromptUnexploredArea = false
+                // Don't stack prompts — show only if neither prompt is already visible
+                if !showExplorationPrompt && !locationManager.isSessionActive {
+                    withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+                        showUnexploredAreaPrompt = true
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showPassport) {
+            PassportView(regions: regions, cantons: layerManager.cantons)
+        }
+        .sheet(isPresented: $showSessionSummary) {
+            if let summary = lastSessionSummary {
+                SessionSummaryView(summary: summary) {
+                    showSessionSummary = false
+                }
+            }
+        }
     }
     
     // MARK: - Computed Achievement State
@@ -168,6 +251,7 @@ struct ContentView: View {
                 exploredHexes: exploredHexes,
                 regions: regions,
                 layerManager: layerManager,
+                layerSettings: layerSettings,
                 userLocation: locationManager.userLocation
             )
             .ignoresSafeArea()
@@ -178,10 +262,11 @@ struct ContentView: View {
                 Button(action: { showSettings.toggle() }) {
                     Image(systemName: "gearshape.fill")
                         .foregroundStyle(.primary)
-                        .padding(10)
+                        .padding(11)
                         .background(.ultraThinMaterial)
                         .clipShape(Circle())
-                        .shadow(radius: 4)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
                 }
                 
                 Spacer()
@@ -223,7 +308,8 @@ struct ContentView: View {
                     .padding(.vertical, 10)
                     .background(.ultraThinMaterial)
                     .clipShape(Capsule())
-                    .shadow(radius: 5)
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
                     .animation(.spring(response: 0.3, dampingFraction: 0.7), value: currentZoomLabel)
                 }
                 
@@ -233,57 +319,106 @@ struct ContentView: View {
                 Button(action: { withAnimation { showStats = true } }) {
                     Image(systemName: "trophy.fill")
                         .foregroundStyle(.primary)
-                        .padding(10)
+                        .padding(11)
                         .background(.ultraThinMaterial)
                         .clipShape(Circle())
-                        .shadow(radius: 4)
+                        .overlay(Circle().strokeBorder(.white.opacity(0.2), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.12), radius: 8, x: 0, y: 3)
                 }
             }
             .padding(.horizontal)
             .padding(.top, 10)
             
-            // MARK: Bottom Controls — Recenter + Session Toggle
+            // MARK: Bottom Controls — Floating Cards
             VStack {
                 Spacer()
                 HStack(alignment: .bottom) {
-                    // Recenter
-                    Button {
-                        if let userLocation = locationManager.userLocation {
-                            withAnimation(.easeInOut(duration: 0.5)) {
-                                position = .region(MKCoordinateRegion(
-                                    center: userLocation,
-                                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
-                                ))
+                    // Left buttons: recenter + layers (separate floating circles)
+                    VStack(spacing: 12) {
+                        Button {
+                            if let userLocation = locationManager.userLocation {
+                                withAnimation(.easeInOut(duration: 0.5)) {
+                                    position = .region(MKCoordinateRegion(
+                                        center: userLocation,
+                                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)
+                                    ))
+                                }
                             }
+                        } label: {
+                            Image(systemName: "location.fill")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(.blue)
+                                .frame(width: 52, height: 52)
+                                .background { Circle().fill(.ultraThinMaterial) }
+                                .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 0.5))
+                                .shadow(color: .black.opacity(0.18), radius: 8, x: 0, y: 4)
                         }
-                    } label: {
-                        Image(systemName: "location.fill")
-                            .font(.title3)
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .background(.blue)
-                            .clipShape(Circle())
-                            .shadow(radius: 4)
+                        .disabled(locationManager.userLocation == nil)
+                        .opacity(locationManager.userLocation == nil ? 0.4 : 1.0)
+
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                                showLayerPanel.toggle()
+                            }
+                        } label: {
+                            Image(systemName: "square.3.layers.3d")
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(showLayerPanel ? .white : .primary)
+                                .frame(width: 52, height: 52)
+                                .background {
+                                    if showLayerPanel {
+                                        Circle().fill(Color.orange)
+                                    } else {
+                                        Circle().fill(.ultraThinMaterial)
+                                    }
+                                }
+                                .overlay(Circle().strokeBorder(showLayerPanel ? Color.orange.opacity(0.5) : .white.opacity(0.25), lineWidth: 0.5))
+                                .shadow(color: showLayerPanel ? Color.orange.opacity(0.4) : .black.opacity(0.18), radius: 8, x: 0, y: 4)
+                        }
                     }
-                    .disabled(locationManager.userLocation == nil)
-                    .opacity(locationManager.userLocation == nil ? 0.5 : 1.0)
 
                     Spacer()
 
-                    // Session toggle
+                    // Right card: session toggle
                     sessionToggleButton
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 40)
             }
 
-            // MARK: Exploration Prompt
+            // MARK: Layer Panel
+            if showLayerPanel {
+                Color.clear
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                            showLayerPanel = false
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        LayerPanelView(settings: layerSettings)
+                            .padding(.leading, 16)
+                            .padding(.bottom, 148)
+                    }
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .zIndex(4)
+            }
+
+            // MARK: Exploration Prompt (launch)
             if showExplorationPrompt {
                 explorationPromptOverlay
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
                     .zIndex(10)
             }
-            
+
+            // MARK: Unexplored Area Prompt (location-triggered)
+            if showUnexploredAreaPrompt {
+                unexploredAreaPromptOverlay
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .zIndex(10)
+            }
+
             // MARK: Achievement Banner & Confetti
             // Banner slides down from top when a new achievement is unlocked.
             // Multiple unlocks are queued and shown one after another.
@@ -397,6 +532,56 @@ struct ContentView: View {
             }
     }
 
+    private var unexploredAreaPromptOverlay: some View {
+        Color.black.opacity(0.45)
+            .ignoresSafeArea()
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 20) {
+                    Image(systemName: "map.fill")
+                        .font(.system(size: 52))
+                        .foregroundStyle(.orange)
+
+                    VStack(spacing: 8) {
+                        Text("New territory ahead!")
+                            .font(.title2).bold()
+                            .multilineTextAlignment(.center)
+
+                        Text("You've stepped into an area you've never explored. Start a session to scratch it onto your map.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Button {
+                        locationManager.startSession()
+                        withAnimation { showUnexploredAreaPrompt = false }
+                    } label: {
+                        Label("Start Exploring", systemImage: "play.fill")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(.green)
+                            .cornerRadius(16)
+                    }
+
+                    Button {
+                        withAnimation { showUnexploredAreaPrompt = false }
+                    } label: {
+                        Text("Not right now")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(28)
+                .background(.ultraThickMaterial)
+                .cornerRadius(28)
+                .shadow(radius: 24)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 40)
+            }
+    }
+
     // MARK: - HUD Pill Logic
     
     /// Strips secondary names from bilingual Swiss place names (e.g. "Biel/Bienne" → "Biel")
@@ -423,14 +608,10 @@ struct ContentView: View {
         if currentSpan >= 1.8  { return "\(regions.count) Towns" }
         
         if currentSpan >= 0.18 {
-            // Count municipalities visited in the currently visible canton
             let cantonID = layerManager.cantons.first(where: {
                 getPrimaryName(from: $0.name) == centeredCantonName
-            })?.id
-            let visitedInCanton = regions.filter {
-                RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID == cantonID
-            }.count
-            return "\(visitedInCanton) Towns"
+            })?.id ?? ""
+            return "\(visitedCountPerCanton[cantonID] ?? 0) Towns"
         }
         
         // Street level: show % of the active municipality explored
@@ -447,26 +628,37 @@ struct ContentView: View {
     /// Called on every location update (walking) and every map pan end (browsing).
     /// Runs H3 conversion and SQLite lookup off the main thread to avoid UI stutters.
     private func updateCenteredRegion(coordinate: CLLocationCoordinate2D) {
-        Task {
+        centeredRegionTask?.cancel()
+        centeredRegionTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 250_000_000) // 250 ms debounce
+            } catch {
+                return // cancelled before debounce elapsed
+            }
+
             // H3 index generation — off main thread to avoid blocking map gestures
             let (hex10, hex9) = await Task.detached(priority: .userInitiated) {
                 let latRads = coordinate.latitude * .pi / 180.0
                 let lonRads = coordinate.longitude * .pi / 180.0
                 var coord = LatLng(lat: latRads, lng: lonRads)
-                
+
                 var h3Index10: H3Index = 0
                 var h3Index9: H3Index = 0
                 latLngToCell(&coord, Int32(10), &h3Index10)
                 latLngToCell(&coord, Int32(9), &h3Index9)
-                
+
                 return (String(h3Index10, radix: 16), String(h3Index9, radix: 16))
             }.value
-            
+
+            guard !Task.isCancelled else { return }
+
             // SQLite region lookup — also off main thread via OfflineDatabase's serial queue
             let regionData = await Task.detached(priority: .userInitiated) {
                 OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9)
             }.value
-            
+
+            guard !Task.isCancelled else { return }
+
             // All @State mutations must happen on the main thread
             await MainActor.run {
                 guard let regionData else {
@@ -475,20 +667,20 @@ struct ContentView: View {
                     centeredCantonName = "Unknown Canton"
                     return
                 }
-                
+
                 centeredRegionID = regionData.regionID
-                
+
                 guard let metadata = RegionMetadataManager.shared.municipalities[regionData.regionID] else {
                     return
                 }
-                
+
                 centeredMunicipalityName = getPrimaryName(from: metadata.name)
-                
+
                 // Look up total hexes for the Location Details progress bar
                 centeredMuniTotalHexes = regions.first(where: {
                     $0.regionID == regionData.regionID
                 })?.totalHexes ?? 0
-                
+
                 if let canton = layerManager.cantons.first(where: { $0.id == metadata.cantonID }) {
                     centeredCantonName = getPrimaryName(from: canton.name)
                 } else {
@@ -541,9 +733,7 @@ struct ContentView: View {
                         let cantonID = layerManager.cantons.first(where: {
                             getPrimaryName(from: $0.name) == centeredCantonName
                         })?.id
-                        let visitedInCanton = regions.filter {
-                            RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID == cantonID
-                        }.count
+                        let visitedInCanton = visitedCountPerCanton[cantonID ?? ""] ?? 0
                         let totalInCanton = RegionMetadataManager.shared.municipalities.values.filter {
                             $0.cantonID == cantonID
                         }.count
@@ -556,15 +746,12 @@ struct ContentView: View {
                         )
                         
                         // Country row — cantons visited vs Switzerland's 26
-                        let visitedCantons = Set(regions.compactMap {
-                            RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
-                        }).count
                         detailCard(
                             icon: "globe.europe.africa.fill",
                             title: "Switzerland",
                             subtitle: "Country",
-                            progressText: "\(visitedCantons) / 26 Cantons Visited",
-                            percentage: Double(visitedCantons) / 26.0
+                            progressText: "\(cachedVisitedCantonCount) / 26 Cantons Visited",
+                            percentage: Double(cachedVisitedCantonCount) / 26.0
                         )
                     }
                     .padding(.horizontal)
@@ -648,15 +835,29 @@ struct ContentView: View {
                                 statCard(icon: "globe.europe.africa.fill", title: "Area", value: "\(calculateArea()) km²")
                             }
                             .padding(.horizontal)
-                            
+
+                            // Streak cards
+                            HStack(spacing: 15) {
+                                streakCard(
+                                    icon: "flame.fill",
+                                    title: "Streak",
+                                    value: streakResult.current == 0 ? "–" : "\(streakResult.current)d",
+                                    color: streakResult.current > 0 ? .orange : .gray
+                                )
+                                streakCard(
+                                    icon: "trophy.fill",
+                                    title: "Best",
+                                    value: streakResult.best == 0 ? "–" : "\(streakResult.best)d",
+                                    color: .yellow
+                                )
+                            }
+                            .padding(.horizontal)
+
                             // National progress — cantons and municipalities vs Swiss totals
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("National Discovery").font(.headline)
                                 
-                                let visitedCantons = Set(regions.compactMap {
-                                    RegionMetadataManager.shared.municipalities[$0.regionID]?.cantonID
-                                }).count
-                                progressRow(title: "Cantons Visited", current: visitedCantons, total: 26)
+                                progressRow(title: "Cantons Visited", current: cachedVisitedCantonCount, total: 26)
                                 progressRow(
                                     title: "Municipalities Visited",
                                     current: regions.count,
@@ -668,7 +869,39 @@ struct ContentView: View {
                             .cornerRadius(16)
                             .padding(.horizontal)
                             
-                            // Achievements — only unlocked ones shown, empty state handled
+                            // Canton Passport entry point
+                        Button {
+                            withAnimation { showStats = false }
+                            // Delay matches the stats sheet's dismiss animation — presenting
+                            // a new sheet while another is mid-dismiss crashes on iOS 16.
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                showPassport = true
+                            }
+                        } label: {
+                            HStack(spacing: 14) {
+                                Image(systemName: "book.closed.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.orange)
+                                    .frame(width: 32)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Canton Passport")
+                                        .font(.headline)
+                                        .foregroundStyle(.primary)
+                                    Text("\(cachedVisitedCantonCount) / 26 cantons explored")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding()
+                            .background(Color.gray.opacity(0.1))
+                            .cornerRadius(16)
+                        }
+                        .padding(.horizontal)
+
+                        // Achievements — only unlocked ones shown, empty state handled
                             VStack(alignment: .leading, spacing: 12) {
                                 Text("Achievements").font(.headline)
                                 
@@ -695,8 +928,22 @@ struct ContentView: View {
     }
     
     // MARK: - Stats Helpers
-    
-    /// Estimates explored area in km² — each hex at resolution 10 covers ~0.015 km²
+
+    private func streakCard(icon: String, title: String, value: String, color: Color) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon).font(.title2).foregroundStyle(color)
+            Text(value).font(.title3).bold()
+            Text(title).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+        .background(Color.white.opacity(0.1))
+        .cornerRadius(16)
+    }
+
+    /// Estimates explored area in km² using the H3 resolution-10 average cell area
+    /// of ~0.015 km² (~15,047 m²). This is a global average; actual Swiss cell sizes
+    /// vary slightly by latitude but the approximation is accurate within ~2%.
     private func calculateArea() -> String {
         let sqKm = Double(exploredHexes.count) * 0.015
         return String(format: "%.2f", sqKm)
@@ -744,8 +991,29 @@ struct ContentView: View {
         }
     }
     
+    // MARK: - Canton Count Cache
+
+    /// Rebuilds canton visit counts in one O(N) pass over regions.
+    /// Called on appear and whenever the visited-region count changes.
+    private func rebuildCantonCounts() {
+        var countPerCanton = [String: Int]()
+        for region in regions {
+            if let cantonID = RegionMetadataManager.shared.municipalities[region.regionID]?.cantonID {
+                countPerCanton[cantonID, default: 0] += 1
+            }
+        }
+        visitedCountPerCanton    = countPerCanton
+        cachedVisitedCantonCount = countPerCanton.count
+    }
+
+    // MARK: - Streak
+
+    private func rebuildStreak() {
+        streakResult = StreakCalculator.calculate(dates: exploredHexes.map { $0.firstVisited })
+    }
+
     // MARK: - Achievement Logic
-    
+
     /// Compares current unlocked achievements against persisted titles from previous launches.
     /// Newly unlocked achievements are queued for banner display one at a time.
     private func checkAchievements() {

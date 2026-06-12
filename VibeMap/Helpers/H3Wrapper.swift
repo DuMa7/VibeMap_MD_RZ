@@ -1,80 +1,46 @@
-//
-//  H3Wrapper.swift
-//  VibeMap
-//
-//  Created by Jenna Jacquemyns on 07.02.2026.
-//  Optimized by Claude on 19.02.2026.
-//
-
 import Foundation
 import CoreLocation
-import h3lib
+import H3
 
-struct H3Wrapper {
-    
-    // Pre-calculated constants to avoid repeated division in hot paths
-    private static let toRad = Double.pi / 180.0
-    private static let toDeg = 180.0 / Double.pi
-    
-    // MARK: - Core Raw API (Fast Path)
-    // Use these when possible to avoid String conversion overhead.
-    // Only convert to String at the persistence boundary (e.g. SwiftData).
-    
-    /// Converts a coordinate to a raw H3Index (UInt64). Returns nil on failure.
-    /// This is the zero-allocation fast path — prefer this over getH3Index
-    /// when you don't immediately need a String.
+/// Pure stateless wrappers around the H3 package. Explicitly nonisolated so the
+/// recording, import, and map pipelines can call them inside detached tasks
+/// (the project's default actor isolation is MainActor).
+nonisolated struct H3Wrapper {
+
     static func getRawIndex(
         from coordinate: CLLocationCoordinate2D,
         resolution: Int32 = 10
-    ) -> H3Index? {
-        var g = LatLng(
-            lat: coordinate.latitude * toRad,
-            lng: coordinate.longitude * toRad
-        )
-        var index: H3Index = 0
-        let error = latLngToCell(&g, resolution, &index)
-        // Always propagate the H3 error code rather than relying on index == 0,
-        // which is an implementation detail rather than a guaranteed API contract.
-        guard error == E_SUCCESS else { return nil }
-        return index
-    }
-    
-    /// Converts a raw H3Index to its parent at the given resolution. Returns nil on failure.
-    static func cellToParent(index: H3Index, parentRes: Int32) -> H3Index? {
-        var parentIndex: H3Index = 0
-        let error = h3lib.cellToParent(index, parentRes, &parentIndex)
-        guard error == 0 else { return nil }
-        return parentIndex
-    }
-    
-    /// Returns the boundary vertices for a raw H3Index.
-    static func getVertices(for index: H3Index) -> [CLLocationCoordinate2D] {
-        var boundary = CellBoundary()
-        cellToBoundary(index, &boundary)
-        
-        let count = Int(boundary.numVerts)
-        guard count > 0 else { return [] }
-        
-        // Allocate with exact capacity (no resizing) and bind memory once outside the loop.
-        return Array(unsafeUninitializedCapacity: count) { buffer, initializedCount in
-            withUnsafeBytes(of: boundary.verts) { rawPtr in
-                let latLngs = rawPtr.bindMemory(to: LatLng.self)
-                for i in 0..<count {
-                    let vertex = latLngs[i]
-                    buffer[i] = CLLocationCoordinate2D(
-                        latitude: vertex.lat * toDeg,
-                        longitude: vertex.lng * toDeg
-                    )
-                }
-            }
-            initializedCount = count
+    ) -> UInt64? {
+        do {
+            return try latLngToCell(
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude,
+                resolution: Int(resolution)
+            )
+        } catch {
+            return nil
         }
     }
-    
-    // MARK: - String API (Persistence / Display boundary)
-    // Use these at the SwiftData / UI layer where Strings are required.
-    
-    /// Converts a coordinate into an H3 hex string.
+
+    static func cellToParent(index: UInt64, parentRes: Int32) -> UInt64? {
+        do {
+            return try H3.cellToParent(
+                cell: index,
+                resolution: Int(parentRes)
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    static func getVertices(for index: UInt64) -> [CLLocationCoordinate2D] {
+        do {
+            return try cellToBoundary(cell: index)
+        } catch {
+            return []
+        }
+    }
+
     static func getH3Index(
         from coordinate: CLLocationCoordinate2D,
         resolution: Int32 = 10
@@ -84,17 +50,40 @@ struct H3Wrapper {
         }
         return String(index, radix: 16)
     }
-    
-    /// Returns boundary vertices for a hex string.
+
     static func getVertices(for h3String: String) -> [CLLocationCoordinate2D] {
         guard let index = UInt64(h3String, radix: 16) else { return [] }
         return getVertices(for: index)
     }
-    
-    /// Converts a hex string to its parent hex string at the given resolution.
+
     static func cellToParent(h3Index: String, parentRes: Int32) -> String? {
         guard let index = UInt64(h3Index, radix: 16) else { return nil }
         guard let parent = cellToParent(index: index, parentRes: parentRes) else { return nil }
         return String(parent, radix: 16)
+    }
+
+    /// Returns the res-`childRes` child cell whose centroid is closest to the parent's centroid.
+    /// Used by the res-9 → res-10 migration to pick a single representative child for each
+    /// legacy res-9 record. The mapping is deterministic and requires no original GPS data.
+    static func cellToCenterChild(h3Index: String, childRes: Int32) -> String? {
+        guard let index = UInt64(h3Index, radix: 16) else { return nil }
+        do {
+            let child = try H3.cellToCenterChild(cell: index, childResolution: Int(childRes))
+            return String(child, radix: 16)
+        } catch {
+            return nil
+        }
+    }
+
+    /// Returns the geographic centroid of an H3 cell by averaging its boundary vertices.
+    /// For a convex hexagon the centroid equals the vertex average exactly, so no approximation
+    /// is needed. Used for viewport filtering before passing indices to HexMerger.
+    static func cellCenter(h3Index: String) -> CLLocationCoordinate2D? {
+        let verts = getVertices(for: h3Index)
+        guard !verts.isEmpty else { return nil }
+        return CLLocationCoordinate2D(
+            latitude:  verts.map { $0.latitude  }.reduce(0, +) / Double(verts.count),
+            longitude: verts.map { $0.longitude }.reduce(0, +) / Double(verts.count)
+        )
     }
 }
