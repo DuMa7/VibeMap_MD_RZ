@@ -117,7 +117,7 @@ struct SettingsView: View {
                                 do {
                                     let importer = HealthKitImporter(modelContext: modelContext)
                                     try await importer.requestAuthorization()
-                                    let preview = try await importer.buildPreview(since: healthLastSyncDate)
+                                    let preview = try await importer.buildPreview(since: importer.incrementalSyncStart)
                                     if preview.workoutCount == 0 {
                                         alertMessage = healthLastSyncDate == nil
                                             ? "No activities found in Apple Health."
@@ -701,8 +701,11 @@ private struct HealthSyncPreviewSheet: View {
                 }
 
                 Group {
-                    if let lastSync = lastSyncDate {
-                        Text("Activities since \(lastSync.formatted(date: .abbreviated, time: .omitted)).")
+                    if lastSyncDate != nil {
+                        // The fetch reaches back a grace window before the last sync to catch
+                        // late-arriving workouts, so some listed activities may already be
+                        // imported — dedup makes confirming them a no-op.
+                        Text("Includes a re-check of recent activities — anything already on your map is skipped automatically.")
                     } else {
                         Text("Only activities with GPS route data will produce hexes.")
                     }

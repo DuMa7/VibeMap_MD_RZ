@@ -82,7 +82,8 @@ enum HealthKitError: LocalizedError {
 ///   2. importWorkouts   — fetches GPS routes, runs H3 off-thread, batch-inserts
 ///
 /// Incremental sync: the last-imported workout's end date is persisted in UserDefaults under
-/// lastSyncKey. buildPreview/importWorkouts both accept an optional since: date.
+/// lastSyncKey. Callers pass incrementalSyncStart (watermark minus a grace window) as the
+/// since: date so workouts that reached Apple Health late are still picked up.
 ///
 /// HealthKit setup (done once in Xcode):
 ///   • Target → Signing & Capabilities → + Capability → HealthKit
@@ -109,6 +110,20 @@ final class HealthKitImporter {
     var lastSyncDate: Date? {
         let t = UserDefaults.standard.double(forKey: Self.lastSyncKey)
         return t > 0 ? Date(timeIntervalSince1970: t) : nil
+    }
+
+    /// Grace window subtracted from the watermark on incremental syncs.
+    /// Third-party apps (Strava, Komoot, …) can deliver a workout to Apple Health
+    /// hours or even days after it was recorded. A sync that runs inside that gap
+    /// would advance the watermark past the late workout and skip it forever.
+    /// Re-examining a week of already-imported workouts is cheap: the hex pipeline
+    /// deduplicates, so nothing is ever imported twice.
+    static let syncGraceWindow: TimeInterval = 7 * 24 * 60 * 60
+
+    /// The date incremental syncs should fetch from: the watermark minus the grace
+    /// window, or nil if never synced (full history sync).
+    var incrementalSyncStart: Date? {
+        lastSyncDate?.addingTimeInterval(-Self.syncGraceWindow)
     }
 
     init(modelContext: ModelContext) {
