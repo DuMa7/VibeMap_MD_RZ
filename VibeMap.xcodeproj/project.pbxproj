@@ -361,7 +361,7 @@
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
-				SWIFT_OBJC_BRIDGING_HEADER = "/Users/jennajacquemyns/Documents/mathieu fun/VibeMap/VibeMap/App/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "VibeMap/App/BridgingHeader.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
@@ -418,7 +418,7 @@
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OBJC_BRIDGING_HEADER = "/Users/jennajacquemyns/Documents/mathieu fun/VibeMap/VibeMap/App/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "VibeMap/App/BridgingHeader.h";
 				VALIDATE_PRODUCT = YES;
 			};
 			name = Release;
@@ -434,7 +434,7 @@
 				DEVELOPMENT_TEAM = 64J63UYWU8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "/Users/jennajacquemyns/Documents/mathieu fun/VibeMap/VibeMap/App/Info.plist";
+				INFOPLIST_FILE = "VibeMap/App/Info.plist";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "I need my location for the map when app is closed";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "I need my loc for the map";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -453,7 +453,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "/Users/jennajacquemyns/Documents/mathieu fun/VibeMap/VibeMap/App/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "VibeMap/App/BridgingHeader.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -471,7 +471,7 @@
 				DEVELOPMENT_TEAM = 64J63UYWU8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "/Users/jennajacquemyns/Documents/mathieu fun/VibeMap/VibeMap/App/Info.plist";
+				INFOPLIST_FILE = "VibeMap/App/Info.plist";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "I need my location for the map when app is closed";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "I need my loc for the map";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -490,7 +490,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "/Users/jennajacquemyns/Documents/mathieu fun/VibeMap/VibeMap/App/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = "VibeMap/App/BridgingHeader.h";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
