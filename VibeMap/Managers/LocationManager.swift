@@ -9,7 +9,7 @@ import SwiftData
 
 /// Snapshot of what was discovered during a single exploration session.
 /// Built in `stopSession()` after the final flush, before session state is cleared.
-struct SessionSummary {
+struct SessionSummary: Equatable {
     let duration: TimeInterval
     let newHexCount: Int
     /// Municipality names first entered during this session, sorted alphabetically.
