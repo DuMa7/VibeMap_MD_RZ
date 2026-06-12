@@ -111,6 +111,17 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         print("⏹️ Exploration session stopped")
     }
 
+    /// Clears every in-memory recording cache. Called after the user erases all
+    /// exploration data in Settings — otherwise an active session would keep
+    /// suppressing hexes that no longer exist in the database, and stale pending
+    /// hexes could be flushed back in after the wipe.
+    func clearRecordingCaches() {
+        pendingHexes.removeAll()
+        exploredHexSet.removeAll()
+        lastSavedHex = nil
+        lastCheckedHex = nil
+    }
+
     private func buildSessionSummary(startDate: Date) -> SessionSummary {
         let duration = Date().timeIntervalSince(startDate)
         guard let context = modelContext else {

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(LocationManager.self) private var locationManager
 
     @Query private var hexes: [ExploredHex]
     @Query private var regions: [RegionExploration]
@@ -198,6 +199,21 @@ struct SettingsView: View {
                             try modelContext.delete(model: ExploredHex.self)
                             try modelContext.delete(model: RegionExploration.self)
                             try modelContext.delete(model: LocationPoint.self)
+                            try modelContext.save()
+
+                            // In-memory recording caches still reference the deleted hexes;
+                            // without this an active session would keep suppressing them.
+                            locationManager.clearRecordingCaches()
+
+                            // Clear the Health sync watermark so a future sync can re-import
+                            // the workouts whose hexes were just erased.
+                            UserDefaults.standard.removeObject(forKey: HealthKitImporter.lastSyncKey)
+
+                            // ContentView.checkAchievements rewrites this key on the next
+                            // hex-count change anyway, but clear it explicitly so a fresh
+                            // start never inherits stale unlocks through that side path.
+                            UserDefaults.standard.removeObject(forKey: "unlockedAchievementTitles")
+
                             alertMessage = "All exploration data erased."
                             showAlert = true
                         } catch {
