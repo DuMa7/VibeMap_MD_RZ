@@ -98,6 +98,9 @@ struct ContentView: View {
     /// Drives the pulsing animation on the recording dot in the HUD pill
     @State private var recordingPulse: Bool = false
 
+    /// Controls the alert shown when a session can't run because location access is denied
+    @State private var showLocationDeniedAlert = false
+
     // MARK: - Layer State
 
     /// Base map style + overlay toggle state — shared with MapView
@@ -216,6 +219,24 @@ struct ContentView: View {
                     }
                 }
             }
+        }
+        // Location-permission refusal: LocationManager raises this when a session
+        // can't start (or got aborted) because access is denied or restricted.
+        .onChange(of: locationManager.shouldShowLocationDeniedAlert) { _, denied in
+            if denied {
+                locationManager.shouldShowLocationDeniedAlert = false
+                showLocationDeniedAlert = true
+            }
+        }
+        .alert("Location Access Needed", isPresented: $showLocationDeniedAlert) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Not Now", role: .cancel) { }
+        } message: {
+            Text("VibeMap can't record explored areas without location access. Allow location for VibeMap in iPhone Settings — \"Always\" lets exploring continue in the background.")
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showPassport) {

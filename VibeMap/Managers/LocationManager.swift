@@ -40,6 +40,11 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     /// Populated at the end of each session; ContentView observes this to present the summary sheet.
     var completedSessionSummary: SessionSummary? = nil
 
+    /// Set to true when a session can't start (or continue) because location access
+    /// is denied or restricted. ContentView observes this, shows an alert with a
+    /// shortcut to the app's Settings page, and resets it to false.
+    var shouldShowLocationDeniedAlert: Bool = false
+
     private var sessionStartDate: Date? = nil
 
     /// Last hex for which an unexplored-area check was run — prevents re-prompting
@@ -80,6 +85,13 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
 
     func startSession() {
         guard !isSessionActive else { return }
+        // Refuse to start when location access is denied or restricted — otherwise
+        // the UI would show a recording state while no GPS fix can ever arrive.
+        guard authorizationStatus != .denied && authorizationStatus != .restricted else {
+            shouldShowLocationDeniedAlert = true
+            print("🚫 Session not started: location access is denied/restricted")
+            return
+        }
         isSessionActive = true
         shouldPromptUnexploredArea = false
         lastCheckedHex = nil
@@ -94,10 +106,12 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         print("▶️ Exploration session started")
     }
 
-    func stopSession() {
+    /// Ends the active session. Pass `showSummary: false` when the session is being
+    /// aborted (e.g. permission revoked) and the summary sheet would be noise.
+    func stopSession(showSummary: Bool = true) {
         guard isSessionActive else { return }
         flushPendingData()
-        if let startDate = sessionStartDate {
+        if showSummary, let startDate = sessionStartDate {
             completedSessionSummary = buildSessionSummary(startDate: startDate)
         }
         isSessionActive = false
@@ -289,6 +303,14 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             } else {
                 // Low-power monitoring so userLocation stays roughly updated
                 manager.startMonitoringSignificantLocationChanges()
+            }
+        case .denied, .restricted:
+            // Permission denied at the in-session prompt, or revoked in Settings.
+            // A "recording" session that can never receive a fix is a lie — stop it
+            // without the summary sheet and tell the user why.
+            if isSessionActive {
+                stopSession(showSummary: false)
+                shouldShowLocationDeniedAlert = true
             }
         default:
             break
