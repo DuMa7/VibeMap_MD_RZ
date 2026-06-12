@@ -146,7 +146,7 @@ stopSession()
 
 ```
 exploredHexes changes
-  └─ rebuildSpatialGrid()   ← detached; H3Wrapper.cellCenter per hex, once
+  └─ updateSpatialGrid()   ← detached; diffs out new hexes, H3 centroids for those only
        └─ spatialGrid: [GridKey: [String]]  ← 0.1° buckets, ~7 km each
        └─ on complete → rebuildHexOutlines() if span < 0.15
 

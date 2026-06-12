@@ -124,7 +124,7 @@ struct ContentView: View {
 
     // MARK: - Streak Cache
 
-    /// Current and best exploration streaks — recomputed when hex count changes
+    /// Current and best exploration streaks — computed lazily when the stats overlay opens
     @State private var streakResult = StreakCalculator.Result(current: 0, best: 0)
     
     // MARK: - Body
@@ -159,7 +159,6 @@ struct ContentView: View {
                 withAnimation { isLoading = false }
                 repairRegionTotals()
                 rebuildCantonCounts()
-                rebuildStreak()
                 checkAchievements()
                 if !locationManager.isSessionActive {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
@@ -183,10 +182,11 @@ struct ContentView: View {
                 updateCenteredRegion(coordinate: newValue)
             }
         }
-        // Re-check achievements and streak whenever the user enters a new hex
+        // Re-check achievements whenever the user enters a new hex.
+        // (The streak is computed lazily when the stats overlay opens —
+        // recomputing it here cost O(all hexes) on every recorded hex.)
         .onChange(of: exploredHexes.count) { _, _ in
             checkAchievements()
-            rebuildStreak()
         }
         // Rebuild canton caches when a new municipality is discovered
         .onChange(of: regions.count) { _, _ in
@@ -337,7 +337,10 @@ struct ContentView: View {
                 Spacer()
                 
                 // Explorer Profile / Stats button
-                Button(action: { withAnimation { showStats = true } }) {
+                Button(action: {
+                    rebuildStreak()   // lazy: the overlay is the only place streaks are shown
+                    withAnimation { showStats = true }
+                }) {
                     Image(systemName: "trophy.fill")
                         .foregroundStyle(.primary)
                         .padding(11)
