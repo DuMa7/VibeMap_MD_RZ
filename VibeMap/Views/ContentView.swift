@@ -708,10 +708,12 @@ struct ContentView: View {
 
                 centeredMunicipalityName = getPrimaryName(from: metadata.name)
 
-                // Look up total hexes for the Location Details progress bar
+                // Look up total hexes for the Location Details progress bar.
+                // Fall back to the offline database for municipalities the user
+                // hasn't visited yet (no RegionExploration record exists).
                 centeredMuniTotalHexes = regions.first(where: {
                     $0.regionID == regionData.regionID
-                })?.totalHexes ?? 0
+                })?.totalHexes ?? OfflineDatabase.shared.getTotalHexes(for: regionData.regionID)
 
                 if let canton = layerManager.cantons.first(where: { $0.id == metadata.cantonID }) {
                     centeredCantonName = getPrimaryName(from: canton.name)

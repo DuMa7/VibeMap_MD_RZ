@@ -202,7 +202,6 @@ struct SettingsView: View {
                         do {
                             try modelContext.delete(model: ExploredHex.self)
                             try modelContext.delete(model: RegionExploration.self)
-                            try modelContext.delete(model: LocationPoint.self)
                             try modelContext.save()
 
                             // In-memory recording caches still reference the deleted hexes;

@@ -16,12 +16,6 @@ nonisolated struct GPXPoint {
 nonisolated struct GPXFile {
     let name: String?
     let points: [GPXPoint]
-
-    var dateRange: (first: Date, last: Date)? {
-        let dated = points.compactMap { $0.timestamp }
-        guard let first = dated.min(), let last = dated.max() else { return nil }
-        return (first, last)
-    }
 }
 
 /// Aggregated summary shown in the import preview sheet (before writing to DB).
@@ -47,12 +41,10 @@ nonisolated struct GPXImportResult {
 
 nonisolated enum GPXImportError: LocalizedError {
     case noTrackPoints
-    case parseError
 
     var errorDescription: String? {
         switch self {
         case .noTrackPoints: return "No track points found in this file."
-        case .parseError:    return "Could not read the GPX file."
         }
     }
 }

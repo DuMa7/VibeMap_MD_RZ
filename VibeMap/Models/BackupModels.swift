@@ -37,12 +37,10 @@ struct BackupPreview {
 }
 
 enum BackupError: LocalizedError {
-    case encodingFailed
     case noData
 
     var errorDescription: String? {
         switch self {
-        case .encodingFailed: return "Failed to encode backup data."
         case .noData: return "No data to back up."
         }
     }

@@ -37,15 +37,10 @@ class RegionExploration {
     }
     
     var explorationPercentage: Double {
-        // totalHexes can be 0 if the region was written before OfflineDatabase finished opening
-        // on first launch (a startup race condition). Rather than a migration, we repair inline:
-        // the fix is cheap, self-healing, and requires no schema version bump.
-        if totalHexes == 0 {
-            let repaired = OfflineDatabase.shared.getTotalHexes(for: regionID)
-            if repaired > 0 {
-                totalHexes = repaired
-            }
-        }
+        // totalHexes == 0 can only come from a record written before OfflineDatabase
+        // finished opening (startup race). Those records are repaired once per launch
+        // by ContentView.repairRegionTotals() — the getter stays pure so that view
+        // rendering never mutates the model.
         guard totalHexes > 0 else { return 0 }
         return (Double(exploredHexes.count) / Double(totalHexes)) * 100
     }

@@ -156,6 +156,5 @@ class BackupManager {
     private func clearDatabase() throws {
         try modelContext.delete(model: ExploredHex.self)
         try modelContext.delete(model: RegionExploration.self)
-        try modelContext.delete(model: LocationPoint.self)
     }
 }

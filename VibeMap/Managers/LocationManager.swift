@@ -332,7 +332,7 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
         // can map to the wrong hex and produce phantom exploration records.
         guard locationAge < 10 else { return }
         // Negative accuracy = invalid fix; >100 m is too imprecise to reliably resolve a
-        // res-10 hex (~15 m edge length). Tighter than Apple's default to reduce false positives.
+        // res-10 hex (~66 m edge length). Tighter than Apple's default to reduce false positives.
         guard location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100 else { return }
 
         userLocation = location.coordinate
@@ -414,47 +414,9 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("❌ Location error: \(error.localizedDescription)")
     }
-    
-    // CLVisit events fire when CoreLocation detects the user has arrived at or departed from
-    // a significant place. They are delivered even when the app is not running in the foreground,
-    // making them useful for passively catching hex transitions that occur outside active sessions.
-    func locationManager(_ manager: CLLocationManager, didVisit visit: CLVisit) {
-        userLocation = visit.coordinate
 
-        // Only record hexes during an active exploration session
-        guard isSessionActive else { return }
-
-        beginBackgroundTask()
-
-        let latRads = visit.coordinate.latitude * .pi / 180.0
-        let lonRads = visit.coordinate.longitude * .pi / 180.0
-        var coord = LatLng(lat: latRads, lng: lonRads)
-        
-        var h3Index10: H3Index = 0
-        var h3Index9: H3Index = 0
-        latLngToCell(&coord, Int32(10), &h3Index10)
-        latLngToCell(&coord, Int32(9), &h3Index9)
-        
-        let hex10 = String(h3Index10, radix: 16)
-        let hex9 = String(h3Index9, radix: 16)
-        
-        if let regionData = OfflineDatabase.shared.getRegionData(res10: hex10, res9: hex9) {
-            let activeHex = hex10   // always res-10
-
-            if activeHex != lastSavedHex {
-                lastSavedHex = activeHex
-                if !exploredHexSet.contains(activeHex) {
-                    pendingHexes[activeHex] = (resolution: 10, regionID: regionData.regionID)
-                    flushPendingData()
-                }
-            }
-        }
-
-        endBackgroundTask()
-    }
-    
-    deinit {
-        flushPendingData()
-        endBackgroundTask()
-    }
+    // Visit monitoring (CLVisit) is intentionally not used: startMonitoringVisits()
+    // was never called, so the old didVisit handler was dead code. Sessions plus
+    // significant-change monitoring cover every recording path. No deinit either —
+    // LocationManager lives for the app's lifetime.
 }
