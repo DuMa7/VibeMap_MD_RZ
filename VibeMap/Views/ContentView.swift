@@ -142,7 +142,7 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.5), value: isLoading)
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .background {
-                try? BackupManager(modelContext: modelContext).saveAutoBackup()
+                Task { try? await BackupManager(modelContext: modelContext).saveAutoBackup() }
             }
         }
         .task {

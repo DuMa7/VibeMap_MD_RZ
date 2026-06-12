@@ -142,10 +142,11 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             return SessionSummary(duration: duration, newHexCount: 0, newRegionNames: [], currentStreak: 0)
         }
 
+        // Count-only fetch — no model objects are materialized
         let hexDesc = FetchDescriptor<ExploredHex>(
             predicate: #Predicate { $0.firstVisited >= startDate }
         )
-        let newHexCount = (try? context.fetch(hexDesc))?.count ?? 0
+        let newHexCount = (try? context.fetchCount(hexDesc)) ?? 0
 
         let regionDesc = FetchDescriptor<RegionExploration>(
             predicate: #Predicate { $0.firstVisited >= startDate }
@@ -154,7 +155,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
             .map { $0.name }
             .sorted()
 
-        let allDates = ((try? context.fetch(FetchDescriptor<ExploredHex>())) ?? []).map { $0.firstVisited }
+        // The streak needs every hex's firstVisited — fetch just that column
+        var datesDesc = FetchDescriptor<ExploredHex>()
+        datesDesc.propertiesToFetch = [\.firstVisited]
+        let allDates = ((try? context.fetch(datesDesc)) ?? []).map { $0.firstVisited }
         let streak = StreakCalculator.calculate(dates: allDates)
 
         return SessionSummary(duration: duration, newHexCount: newHexCount, newRegionNames: newRegionNames, currentStreak: streak.current)
@@ -162,7 +166,10 @@ class LocationManager: NSObject, CLLocationManagerDelegate {
 
     private func buildExploredSet() {
         guard let context = modelContext else { return }
-        let allHexes = (try? context.fetch(FetchDescriptor<ExploredHex>())) ?? []
+        // The suppression set needs only h3Index — avoid materializing full records
+        var desc = FetchDescriptor<ExploredHex>()
+        desc.propertiesToFetch = [\.h3Index]
+        let allHexes = (try? context.fetch(desc)) ?? []
         exploredHexSet = Set(allHexes.map { $0.h3Index })
         print("🧠 Suppression set: \(exploredHexSet.count) known hexes loaded")
     }

@@ -69,14 +69,16 @@ struct SettingsView: View {
                     }
 
                     Button {
-                        do {
-                            try manager.saveAutoBackup()
-                            lastBackupDate = manager.lastAutoBackupDate()
-                            alertMessage = "Backup saved to device (\(hexes.count) hexes, \(regions.count) towns)."
-                            showAlert = true
-                        } catch {
-                            alertMessage = "Backup failed: \(error.localizedDescription)"
-                            showAlert = true
+                        Task {
+                            do {
+                                try await manager.saveAutoBackup()
+                                lastBackupDate = manager.lastAutoBackupDate()
+                                alertMessage = "Backup saved to device (\(hexes.count) hexes, \(regions.count) towns)."
+                                showAlert = true
+                            } catch {
+                                alertMessage = "Backup failed: \(error.localizedDescription)"
+                                showAlert = true
+                            }
                         }
                     } label: {
                         Label("Back Up Now", systemImage: "icloud.and.arrow.up")
@@ -170,15 +172,17 @@ struct SettingsView: View {
                 // MARK: Manual export / import
                 Section("Manual Transfer") {
                     Button {
-                        do {
-                            exportURL = try manager.createBackupFile()
-                            showShareSheet = true
-                        } catch BackupError.noData {
-                            alertMessage = "Nothing to export yet — explore some hexes first."
-                            showAlert = true
-                        } catch {
-                            alertMessage = "Export failed: \(error.localizedDescription)"
-                            showAlert = true
+                        Task {
+                            do {
+                                exportURL = try await manager.createBackupFile()
+                                showShareSheet = true
+                            } catch BackupError.noData {
+                                alertMessage = "Nothing to export yet — explore some hexes first."
+                                showAlert = true
+                            } catch {
+                                alertMessage = "Export failed: \(error.localizedDescription)"
+                                showAlert = true
+                            }
                         }
                     } label: {
                         Label("Export Backup", systemImage: "square.and.arrow.up")
@@ -316,7 +320,7 @@ struct SettingsView: View {
             ) { result in
                 switch result {
                 case .success(let urls):
-                    // Read all files while security scopes are open
+                    // Read all files while security scopes are open (must stay synchronous)
                     var items: [(filename: String, data: Data)] = []
                     for url in urls {
                         guard url.startAccessingSecurityScopedResource() else { continue }
@@ -331,17 +335,23 @@ struct SettingsView: View {
                         return
                     }
 
-                    // Parse GPX off the picker callback (still on main thread but fast XML parse)
-                    let parsed = GPXImporter.parse(items)
-                    guard !parsed.isEmpty else {
-                        alertMessage = "No track points found in the selected file(s)."
-                        showAlert = true
-                        return
+                    // Parse off the main thread — multi-file Strava/Garmin exports can
+                    // hold tens of thousands of track points and used to freeze the UI here.
+                    isImportingGPX = true
+                    Task {
+                        let parsed = await Task.detached(priority: .userInitiated) {
+                            GPXImporter.parse(items)
+                        }.value
+                        isImportingGPX = false
+                        guard !parsed.isEmpty else {
+                            alertMessage = "No track points found in the selected file(s)."
+                            showAlert = true
+                            return
+                        }
+                        pendingGPXFiles = parsed
+                        gpxSummary = GPXImporter.summarise(parsed)
+                        showGPXPreview = true
                     }
-
-                    pendingGPXFiles = parsed
-                    gpxSummary = GPXImporter.summarise(parsed)
-                    showGPXPreview = true
 
                 case .failure(let error):
                     alertMessage = "File picker error: \(error.localizedDescription)"
