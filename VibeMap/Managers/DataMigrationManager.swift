@@ -12,6 +12,7 @@ enum DataMigrationManager {
     /// Called from `ContentView.task` on launch. Runs any migration that has not yet completed.
     static func runPendingMigrations(context: ModelContext) async {
         await migrateRes9ToRes10(context: context)
+        await recomputeRegionTotals(context: context)
     }
 
     // MARK: - Migration 1: res-9 → res-10
@@ -150,6 +151,47 @@ enum DataMigrationManager {
         } catch {
             // Flag is NOT set — migration will retry on next launch
             print("❌ Res-9 migration save failed: \(error) — will retry on next launch")
+        }
+    }
+
+    // MARK: - Migration 2: recompute region totals at the res-10 denominator
+
+    /// Flag set in UserDefaults once this migration has completed successfully.
+    private static let regionTotalsKey = "hasRecomputedRegionTotalsRes10_v1"
+
+    /// Recomputes `RegionExploration.totalHexes` for every existing region using the
+    /// corrected `OfflineDatabase.getTotalHexes` (res-10-equivalent denominator).
+    ///
+    /// **Background**: totals were originally cached from a `COUNT(*)` that counted res-9
+    /// rows, while exploration is recorded at res-10 — so res-9-indexed regions stored a
+    /// denominator ~7× too small and their exploration % could exceed 100% (e.g. Genève
+    /// at 168.6%). The query is now resolution-aware; this back-fills records written
+    /// before the fix. New regions already get the correct total at creation time.
+    ///
+    /// Gated by a UserDefaults flag; on save failure the flag is left unset so it retries.
+    private static func recomputeRegionTotals(context: ModelContext) async {
+        guard !UserDefaults.standard.bool(forKey: regionTotalsKey) else { return }
+
+        guard let regions = try? context.fetch(FetchDescriptor<RegionExploration>()) else {
+            print("❌ Region-totals recompute: fetch failed — will retry on next launch")
+            return
+        }
+        guard !regions.isEmpty else {
+            UserDefaults.standard.set(true, forKey: regionTotalsKey)
+            return
+        }
+
+        for region in regions {
+            let correct = OfflineDatabase.shared.getTotalHexes(for: region.regionID)
+            if correct > 0 { region.totalHexes = correct }
+        }
+
+        do {
+            try context.save()
+            UserDefaults.standard.set(true, forKey: regionTotalsKey)
+            print("✅ Recomputed totalHexes for \(regions.count) regions (res-10 denominator)")
+        } catch {
+            print("❌ Region-totals recompute save failed: \(error) — will retry on next launch")
         }
     }
 }
