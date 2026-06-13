@@ -155,9 +155,11 @@ pan or zoom (span/centre changes)
        └─ estimate visible count from bucket sizes — O(~36) integer adds, main thread
        └─ adaptive debounce: 200 ms if < 1 000 hexes, 500 ms otherwise
        └─ detached task: iterate buckets in buffered viewport → collect indices
-       └─ detached task: HexMerger.mergeHexOutlines(indices) → hexOutlines
+       └─ detached task: HexMerger.mergeHexOutlines(indices) → [HexCluster] (outer + holes)
+       └─ main actor: build one MKPolygon per cluster with interior holes
 
-currentSpan < 0.15   → hexOutlines (res-10, flat orange.opacity(0.4))
+currentSpan < 0.15   → hex MKPolygons (res-10, flat orange.opacity(0.4); holes are
+                       even-odd gaps so fills never stack → uniform intensity)
 currentSpan 0.15–2.0 → municipality GeoJSON polygons (opacity = max(0.15, explorationPct × 0.6))
 currentSpan 2.0–10.0 → canton GeoJSON polygons (opacity = max(0.15, visitedMunis/totalMunis × 0.6))
 currentSpan ≥ 10.0   → nothing

@@ -36,8 +36,10 @@ struct MapView: View {
 
     // MARK: - Outline State
 
-    /// Merged outline polygons — updated after each viewport query + HexMerger run.
-    @State private var hexOutlines: [[CLLocationCoordinate2D]] = []
+    /// Merged hex polygons (outer boundary + interior holes), rebuilt after each
+    /// viewport query. Holes are real even-odd gaps, so the flat fill never stacks
+    /// — explored area stays a uniform opacity regardless of how it was walked.
+    @State private var hexPolygons: [MKPolygon] = []
 
     /// Handle for the in-flight outline rebuild.
     @State private var hexOutlineTask: Task<Void, Never>?
@@ -91,8 +93,8 @@ struct MapView: View {
                         }
                     }
                 } else {
-                    ForEach(hexOutlines.indices, id: \.self) { i in
-                        MapPolygon(coordinates: hexOutlines[i])
+                    ForEach(hexPolygons.indices, id: \.self) { i in
+                        MapPolygon(hexPolygons[i])
                             .foregroundStyle(.orange.opacity(0.4))
                             .stroke(.orange, lineWidth: 1)
                     }
@@ -238,7 +240,7 @@ struct MapView: View {
         hexOutlineTask?.cancel()
         hexOutlineTask = Task {
             do { try await Task.sleep(nanoseconds: debounceNs) } catch { return }
-            let result = await Task.detached(priority: .userInitiated) {
+            let clusters = await Task.detached(priority: .userInitiated) {
                 // Collect h3Index strings from all grid buckets in the buffered viewport.
                 // No H3 calls here — the grid already maps spatial position to index strings.
                 let buf    = span * 2.0
@@ -257,8 +259,15 @@ struct MapView: View {
                 return HexMerger.mergeHexOutlines(indices)
             }.value
             guard !Task.isCancelled else { return }
-            hexOutlines = result
-            print("📐 Hex outlines: \(result.count) rings, ~\(approxCount) hexes (span \(String(format: "%.3f", span)))")
+            // Build one MKPolygon per cluster with its holes as interior polygons,
+            // so MapKit fills with the even-odd rule (holes punched out, no overlap).
+            hexPolygons = clusters.map { cluster in
+                MKPolygon(coordinates: cluster.outer, count: cluster.outer.count,
+                          interiorPolygons: cluster.holes.map {
+                              MKPolygon(coordinates: $0, count: $0.count)
+                          })
+            }
+            print("📐 Hex polygons: \(clusters.count) clusters, ~\(approxCount) hexes (span \(String(format: "%.3f", span)))")
         }
     }
 
