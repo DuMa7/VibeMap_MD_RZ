@@ -92,7 +92,7 @@ VibeMap is an iOS exploration-tracking app for Switzerland. It divides the count
 | `BackupManager.swift` | 150 | Serialises all `ExploredHex` and `RegionExploration` records to JSON (`BackupData` v2), encoding and writing off-main. Restore wipes the store and re-inserts the backup's records after a preview/confirm step. Auto-backup runs on scene background inside a UIKit background task. |
 | `GPXImporter.swift` | 300 | Two-phase import: `parse()` (no DB writes, builds preview summary) and `importFiles()` (batch write). The coordinate→H3 conversion runs on a detached task. Only genuinely new hexes reach SwiftData. |
 | `HealthKitImporter.swift` | 230 | Two-phase sync from any app that writes `HKWorkoutRoute` GPS data (Komoot, Apple Fitness, Strava, etc.). `buildPreview()` fetches workout metadata and groups by source app. `importWorkouts()` fetches GPS routes via `HKWorkoutRouteQuery`, converts to H3 off-thread (same pipeline as GPXImporter), and batch-inserts new hexes. Tracks hexes per source app for the result summary. Stores a sync watermark in UserDefaults (`healthKitLastSyncDate`) for incremental syncs. Apps that only sync summaries (e.g. Garmin Connect) produce `workoutsWithRoutes = 0` in the result and are called out in the UI. |
-| `DataMigrationManager.swift` | 130 | One-time data migrations run from `ContentView.task` on each launch. Each migration is gated by a UserDefaults flag. **Migration 1 (`hasCompletedRes9ToRes10Migration_v1`)**: converts every res-9 `ExploredHex` to its res-10 centre child via `H3Wrapper.cellToCenterChild`. If a res-10 counterpart already exists the res-9 record is removed without creating a duplicate. `RegionExploration.exploredHexes` is updated in the same atomic `context.save()`. |
+| `DataMigrationManager.swift` | 130 | One-time data migrations run from `ContentView.task` on each launch. Each migration is gated by a UserDefaults flag. **Migration 1 (`hasCompletedRes9ToRes10Migration_v1`)**: converts every res-9 `ExploredHex` to its res-10 centre child via `H3Wrapper.cellToCenterChild`. If a res-10 counterpart already exists the res-9 record is removed without creating a duplicate. `RegionExploration.exploredHexes` is updated in the same atomic `context.save()`. **Migration 2 (`hasRecomputedRegionTotalsRes10_v1`)**: back-fills `RegionExploration.totalHexes` using the resolution-aware `getTotalHexes`, fixing records cached before the denominator fix. |
 | `RegionMetadataManager.swift` | 11 | Singleton cache of `[regionID: (name, cantonID)]`. Populated once by `MapLayerManager` during GeoJSON parse. Read-only after that. |
 
 ### Models
@@ -155,9 +155,11 @@ pan or zoom (span/centre changes)
        └─ estimate visible count from bucket sizes — O(~36) integer adds, main thread
        └─ adaptive debounce: 200 ms if < 1 000 hexes, 500 ms otherwise
        └─ detached task: iterate buckets in buffered viewport → collect indices
-       └─ detached task: HexMerger.mergeHexOutlines(indices) → hexOutlines
+       └─ detached task: HexMerger.mergeHexOutlines(indices) → [HexCluster] (outer + holes)
+       └─ main actor: build one MKPolygon per cluster with interior holes
 
-currentSpan < 0.15   → hexOutlines (res-10, flat orange.opacity(0.4))
+currentSpan < 0.15   → hex MKPolygons (res-10, flat orange.opacity(0.4); holes are
+                       even-odd gaps so fills never stack → uniform intensity)
 currentSpan 0.15–2.0 → municipality GeoJSON polygons (opacity = max(0.15, explorationPct × 0.6))
 currentSpan 2.0–10.0 → canton GeoJSON polygons (opacity = max(0.15, visitedMunis/totalMunis × 0.6))
 currentSpan ≥ 10.0   → nothing
@@ -216,7 +218,7 @@ Every pan-end and every walking location update calls `updateCenteredRegion(coor
 | Dependency | Why |
 |---|---|
 | **H3 (Uber)** via Swift package | Hierarchical hex grid. Resolution 9/10 parent-child relationship drives the zoom-level ladder. Offline C computation, <1 ms per fix. |
-| **swiss_index.sqlite** (bundled) | Pre-built map of every H3 cell in Switzerland → municipality ID. Eliminates network dependency for region detection. Schema: `Hex_Map(h3_index TEXT, region_id TEXT, resolution INTEGER)`. |
+| **swiss_index.sqlite** (bundled) | Pre-built map of every H3 cell in Switzerland → municipality ID. Eliminates network dependency for region detection. Schema: `Hex_Map(h3_index TEXT, region_id TEXT, resolution INTEGER)`. Most municipalities are indexed at res-9, some at res-10 (never both); since exploration records res-10, `getTotalHexes` counts each res-9 row as its 7 res-10 children so the exploration-% denominator is exact. |
 | **cantons.geojson / municipalities.geojson** (bundled) | GeoJSON polygon data for map overlays and metadata (names, canton IDs). Loaded once at startup. |
 | **HealthKit** (system framework) | Read-only access to workout routes. Used by `HealthKitImporter` to pull GPS routes from any app that writes them (Apple Fitness, Komoot, Strava, …). Requires `com.apple.developer.healthkit` entitlement and `NSHealthShareUsageDescription` in Info.plist. |
 

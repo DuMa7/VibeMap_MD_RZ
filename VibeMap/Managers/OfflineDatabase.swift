@@ -55,8 +55,13 @@ nonisolated final class OfflineDatabase: @unchecked Sendable {
             print("❌ Failed to prepare region statement")
         }
 
-        // Statement 2: hex count per region
-        let countQuery = "SELECT COUNT(*) FROM Hex_Map WHERE region_id = ?;"
+        // Statement 2: total res-10-equivalent hex count per region.
+        // The DB indexes most municipalities at res-9 and some at res-10, but exploration is
+        // always recorded at res-10. Each res-9 cell has exactly 7 res-10 children (H3 is
+        // aperture-7; Swiss cells are all hexagons, never 6-child pentagons), and a hex can
+        // only be attributed to a region via its res-9 parent — so 7 × (res-9 count) is the
+        // exact number of res-10 hexes recordable in the region, i.e. the 100% denominator.
+        let countQuery = "SELECT COALESCE(SUM(CASE WHEN resolution = 10 THEN 1 ELSE 7 END), 0) FROM Hex_Map WHERE region_id = ?;"
         if sqlite3_prepare_v2(db, countQuery, -1, &countStatement, nil) != SQLITE_OK {
             print("❌ Failed to prepare count statement")
         }
@@ -83,6 +88,8 @@ nonisolated final class OfflineDatabase: @unchecked Sendable {
         }
     }
 
+    /// Total res-10-equivalent hex count for a region — the denominator for exploration %.
+    /// See `prepareStatements` for why res-9 rows count as 7.
     func getTotalHexes(for regionID: String) -> Int {
         queue.sync { () -> Int in
             guard let statement = countStatement else { return 0 }
