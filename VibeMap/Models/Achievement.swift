@@ -1,10 +1,3 @@
-//
-//  Achievement.swift
-//  VibeMap
-//
-//  Created by Jenna Jacquemyns on 08.02.2026.
-//
-
 import Foundation
 import SwiftUI
 

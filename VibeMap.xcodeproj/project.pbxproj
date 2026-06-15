@@ -63,16 +63,6 @@
 			path = VibeMap;
 			sourceTree = "<group>";
 		};
-		A2140DAA2F3754A7003CC14E /* VibeMapTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = VibeMapTests;
-			sourceTree = "<group>";
-		};
-		A2140DB42F3754A7003CC14E /* VibeMapUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = VibeMapUITests;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -105,8 +95,6 @@
 			isa = PBXGroup;
 			children = (
 				A2140D9A2F3754A4003CC14E /* VibeMap */,
-				A2140DAA2F3754A7003CC14E /* VibeMapTests */,
-				A2140DB42F3754A7003CC14E /* VibeMapUITests */,
 				A2140D992F3754A4003CC14E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -160,9 +148,6 @@
 			dependencies = (
 				A2140DA92F3754A7003CC14E /* PBXTargetDependency */,
 			);
-			fileSystemSynchronizedGroups = (
-				A2140DAA2F3754A7003CC14E /* VibeMapTests */,
-			);
 			name = VibeMapTests;
 			packageProductDependencies = (
 			);
@@ -182,9 +167,6 @@
 			);
 			dependencies = (
 				A2140DB32F3754A7003CC14E /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				A2140DB42F3754A7003CC14E /* VibeMapUITests */,
 			);
 			name = VibeMapUITests;
 			packageProductDependencies = (
@@ -432,7 +414,7 @@
 				DEVELOPMENT_TEAM = 64J63UYWU8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "VibeMap/App/Info.plist";
+				INFOPLIST_FILE = VibeMap/App/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -449,7 +431,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "VibeMap/App/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = VibeMap/App/BridgingHeader.h;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -467,7 +449,7 @@
 				DEVELOPMENT_TEAM = 64J63UYWU8;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "VibeMap/App/Info.plist";
+				INFOPLIST_FILE = VibeMap/App/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -484,7 +466,7 @@
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_OBJC_BRIDGING_HEADER = "VibeMap/App/BridgingHeader.h";
+				SWIFT_OBJC_BRIDGING_HEADER = VibeMap/App/BridgingHeader.h;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";

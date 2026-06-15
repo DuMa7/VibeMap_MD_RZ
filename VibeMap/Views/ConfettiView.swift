@@ -1,11 +1,3 @@
-//
-//  ConfettiView.swift
-//  VibeMap
-//
-//  Created by Jenna Jacquemyns on 08.02.2026.
-//
-
-
 import SwiftUI
 
 /// Full-screen confetti burst shown alongside the achievement banner.
